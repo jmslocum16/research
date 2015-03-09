@@ -8,19 +8,23 @@
  
 /* Initialize OpenGL Graphics */
 void initGL() {
-   // Set "clearing" or background color
-   glClearColor(0.0f, 0.0f, 0.0f, 1.0f); // Black and opaque
+	// Set "clearing" or background color
+	glClearColor(0.0f, 0.0f, 0.0f, 1.0f); // Black and opaque
 }
 
 // optinos
 bool headless; // run without ui for profiling
 int size; // number of simulation grids
 bool water;
+bool drawVelocity;
 
-double dt = .02;
+double dt = .05;
+
+
+// GRID[R][C] maps to first quadrant by R->Y, C->X!!
 
 struct Cell {
-	double p, vx, vy, dp, R, phi;
+	double p, vx, vy, dp, R, phi; // pressure ,x velocity, y velocity, pressure correction, residual, level set value
 };
 
 struct Cell* grid;
@@ -49,8 +53,8 @@ void display() {
 				glColor3f(0.0, 0.0, val);
 				
 				double x = -1.0 + (2.0 * j) / size;
-				double y = 1.0 - (2.0 * i) / size; 
-				glRectf(x, y, x + 2.0/size, y - 2.0/size);
+				double y = -1.0 + (2.0 * i) / size;
+				glRectf(x, y, x + 2.0/size, y + 2.0/size);
 			}
 		}
 	} else {
@@ -78,8 +82,9 @@ void display() {
 				//printf("percent: %lf\n", percent);
 				glColor3f(redPercent, 0, bluePercent);
 				double x = -1.0 + (2.0 * j) / size;
-				double y = 1.0 - (2.0 * i) / size; 
-				glRectf(x, y, x + 2.0/size, y - 2.0/size);
+				double y = -1.0 + (2.0 * i) / size;
+				//double y = 1.0 - (2.0 * i) / size; 
+				glRectf(x, y, x + 2.0/size, y + 2.0/size);
 			}
 		}
 	}
@@ -342,7 +347,9 @@ void runStep() {
 			grid[index].vy -= advectY;
 
 			// add gravity TODO(make better)
-			grid[index].vy -= .98 * dt;
+			//grid[index].vy -= .98 * dt;
+			// density of water is 1000kg/m^3, so 100kg/m^2?.. density = M/V,so mass = V * density = density/(size+2)
+			grid[index].vy -= dt * 9.8*100.0/size/size;
 		}
 	}
 	// grid's vx and vy are now provisional velocity
@@ -392,21 +399,47 @@ void runStep() {
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
 			std::pair<double, double> grad = getPressureGradient(grid, i, j);
-			grid[i*size+j].vx += grad.first * dt;
-			grid[i*size+j].vy += grad.second * dt;
+			grid[i*size+j].vx -= grad.first * dt;
+			grid[i*size+j].vy -= grad.second * dt;
+			//grid[i*size+j].vx += grad.first * dt;
+			//grid[i*size+j].vy += grad.second * dt;
+
+
+
+			// clamp velocity on boundary condition
+			if (i == 0 || i == size-1) {
+				grid[i*size+j].vy = 0.0;
+			}
+			if (j == 0 || j == size-1) {
+				grid[i*size+j].vx = 0.0;
+			}
 			//grid[i*size+j].vx -= grad.first * dt;
 			//grid[i*size+j].vy -= grad.second * dt;
 
 		}
 	}
 
+
+	printf("advecting phi\n");
 	// dphi/dt + v dot grad(phi) = 0
 	// dphi/dt = -v dot grad(phi)
+	double dphi[size*size];
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
-			
+			std::pair<double, double> grad = getLevelSetGradient(grid, i, j);
+			printf("level set gradient at [%d][%d] is (%.2f, %.2f), v is (%.2f, %.2f), dphi is %.2f\n", i, j, grad.first, grad.second, grid[i*size+j].vx, grid[i*size+j].vy, dphi[i*size+j]);
+			//dphi[i*size+j] = -dt * (grad.first * grid[i*size+j].vx + grad.second * grid[i*size+j].vy);
+			dphi[i*size+j] = -dt * (grad.second * grid[i*size+j].vx + grad.first * grid[i*size+j].vy);
 		}
 	}
+	for (int i = 0; i < size; i++) {
+		for (int j = 0; j < size; j++) {
+			grid[i * size + j].phi += dphi[i*size+j];
+			printf(" %.2f", grid[i*size+j].phi);
+		}
+		printf("\n");
+	}
+	
 	
 
 	
@@ -417,7 +450,8 @@ void initSim() {
 	printf("init sim\n");
 	grid = new Cell[size*size];
 	oldGrid = new Cell[size*size];
-	int start = size/2;
+	//int start = size/2;
+	int start = 2;
 
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
@@ -429,6 +463,7 @@ void initSim() {
 			//printf(" %.2f", grid[i*size+j].p);
 			// phi is signed distance function
 			grid[i*size+j].phi = 1 - (abs(i-start) + abs(j-start));
+			grid[i*size+j].phi /= size;
 			printf (" %.2f", grid[i*size+j].phi);
 		}
 		printf("\n");
@@ -463,6 +498,8 @@ int main(int argc, char** argv) {
 			size = atoi(argv[++i]);
 		} else if (!strcmp("--water", arg)) {
 			water = true;
+		} else if (!strcmp("--vel", arg)) {
+			drawVelocity = true;
 		}
 	}
 	printf("headless: %d, size: %d\n", headless, size);
@@ -473,12 +510,12 @@ int main(int argc, char** argv) {
 	initSim();
 
 	// test determinant
-	testDeterminant();
+	//testDeterminant();
 
 	// TODO don't do if headless
-	glutCreateWindow("Single Grid");  // Create window with the given title
 	glutInitWindowSize(640, 640);   // Set the window's initial width & height
-	glutInitWindowPosition(50, 50); // Position the window's initial top-left corner
+	glutInitWindowPosition(50, 50);
+	glutCreateWindow("Single Grid");  // Create window with the given title
 	glutDisplayFunc(display);       // Register callback handler for window re-paint event
 	glutKeyboardFunc(keyboard);
 	initGL();                       // Our own OpenGL initialization
