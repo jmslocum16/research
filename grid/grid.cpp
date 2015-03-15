@@ -1,8 +1,4 @@
-//#include "../common/bitmap.h"
-
 #include <GL/glut.h>  // GLUT, include glu.h and gl.h
-//#include "bitmap.h"
-//#include<common/bitmap.h>
 #include <bitmap.h>
 
 #include <algorithm>
@@ -116,6 +112,37 @@ void display() {
 				//double y = 1.0 - (2.0 * i) / size; 
 				glRectf(x, y, x + 2.0/size, y + 2.0/size);
 			}
+		}
+	}
+
+	if (drawVelocity && size <= 40) { // if size is > 40 this is pretty useless
+		double maxMag = 0.0;
+		for (int i = 0; i < size; i++) {
+			for (int j = 0; j < size; j++) {
+				double x = grid[i*size+j].vx;
+				double y = grid[i*size+j].vy;
+				maxMag = std::max(maxMag, sqrt(x*x + y*y));
+			}
+		}
+
+		if (maxMag >= eps) {
+			glColor3f(0.0, 1.0, 0.0);
+			glBegin(GL_LINES);
+			for (int i = 0; i < size; i++) {
+				for (int j = 0; j < size; j++) {
+					double vx = grid[i*size+j].vx;
+					double vy = grid[i*size+j].vy;
+					double mag = sqrt(vx*vx + vy*vy);
+					if (mag < eps) continue;
+					// max size is 1.0/side length, scaled by the max magnitude
+					double x = -1.0 + (2.0*j) / size + 1.0/size;
+					double y = -1.0 + (2.0*i) / size + 1.0/size;
+					glVertex2f(x, y);
+					double scale = maxMag * size;
+					glVertex2f(x + vx / scale, y + vy /scale);
+				}
+			}
+			glEnd();
 		}
 	}
 
@@ -490,8 +517,8 @@ void initSim() {
 	//int start = 2;
 	int start = size/2;
 
-	int sinkR = size/4;
-	int sinkC = size/2;
+	int sinkR = 2;
+	int sinkC = 2;
 
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
@@ -500,10 +527,10 @@ void initSim() {
 			if (i == start && j == start) {
 				grid[i*size+j].p = 1.0;
 			}
-			//grid[i*size+j].vx = (sinkC - j)/(1.0*size);
-			//grid[i*size+j].vy = (sinkR - i)/(1.0*size);
-			if (i == start)
-				grid[i*size+j].vx = -1;
+			grid[i*size+j].vx = (sinkC - j)/(1.0*size);
+			grid[i*size+j].vy = (sinkR - i)/(1.0*size);
+			//if (i == start)
+			//	grid[i*size+j].vx = -1;
 			// normalize
 			double len = sqrt(grid[i*size+j].vx*grid[i*size+j].vx + grid[i*size+j].vy*grid[i*size+j].vy);
 			if (len > 0) {
