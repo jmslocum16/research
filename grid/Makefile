@@ -1,6 +1,6 @@
 PF = 
 
-INCLUDE = -I/usr/local/include -I/usr/include -I/usr/X11/include -I/p/include -I/usr/include/X11
+INCLUDE = -I/usr/local/include -I/usr/include -I/usr/X11/include -I/p/include -I/usr/include/X11 -I../common
 LIBDIR = -L/usr/local/lib -L/usr/lib -L/usr/X11/lib -L/p/lib -L/usr/lib/x86_64-linux-gnu
 
 LIBS = -lGL -lglut -lz -lX11 -ldl -lXext
@@ -14,8 +14,12 @@ CC = g++
 
 ALL.O = grid.o
 
-grid: $(ALL.O)
-	$(CC) $(CFLAGS) -o $@ $(ALL.O) $(INCLUDE) $(LIBDIR) $(LIBS)
+COMMON.H = ../common/bitmap.h
+
+COMMON.O = ../common/bitmap.o
+
+grid: $(ALL.O) $(COMMON.H)
+	$(CC) $(CFLAGS) -o $@ $(ALL.O) $(COMMON.O) $(INCLUDE) $(LIBDIR) $(LIBS)
 
 clean:
 	rm -f *.o grid

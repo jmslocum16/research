@@ -1,4 +1,9 @@
+//#include "../common/bitmap.h"
+
 #include <GL/glut.h>  // GLUT, include glu.h and gl.h
+//#include "bitmap.h"
+//#include<common/bitmap.h>
+#include <bitmap.h>
 
 #include <algorithm>
 #include <cmath>
@@ -12,11 +17,16 @@ void initGL() {
 	glClearColor(0.0f, 0.0f, 0.0f, 1.0f); // Black and opaque
 }
 
-// optinos
+// options
+int windowWidth = 640;
+int windowHeight = 640;
+
 bool headless; // run without ui for profiling
 int size; // number of simulation grids
 bool water;
 bool drawVelocity;
+bool screenshot;
+int frameNumber = 0;
 
 double dt = .05;
 
@@ -37,6 +47,26 @@ int OPTIMIZED_RELAX_COUNT = 4;
 
 
 double eps = .0001;
+
+void saveScreen() {
+	unsigned char * imageBuffer = new unsigned char[3 * windowWidth * windowHeight];
+	glReadPixels( 0, 0, windowWidth, windowHeight, GL_RGB, GL_UNSIGNED_BYTE, imageBuffer );
+
+	char * fname = new char[80];
+	snprintf(fname, 80, "screenshots/image%d.bmp", frameNumber);
+
+	writeBMP(fname, windowWidth, windowHeight, imageBuffer);
+
+	delete imageBuffer;
+	delete fname;
+
+	printf("saved screenshot of frame %d\n", frameNumber);
+}
+
+void statScreenshotDir() {
+	 // meh
+}
+
 
 /* Handler for window-repaint event. Call back when the window first appears and
    whenever the window needs to be re-painted. */
@@ -90,6 +120,13 @@ void display() {
 	}
 
 	glFlush();  // Render now
+
+	// capture screen if necessary
+	if (screenshot) {
+		saveScreen();
+	}
+
+	frameNumber++;
 }
 
 double deltas[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
@@ -349,7 +386,7 @@ void runStep() {
 			// add gravity TODO(make better)
 			//grid[index].vy -= .98 * dt;
 			// density of water is 1000kg/m^3, so 100kg/m^2?.. density = M/V,so mass = V * density = density/(size+2)
-			grid[index].vy -= dt * 9.8*100.0/size/size;
+			//grid[index].vy -= dt * 9.8*100.0/size/size;
 		}
 	}
 	// grid's vx and vy are now provisional velocity
@@ -429,7 +466,7 @@ void runStep() {
 			std::pair<double, double> grad = getLevelSetGradient(grid, i, j);
 			printf("level set gradient at [%d][%d] is (%.2f, %.2f), v is (%.2f, %.2f), dphi is %.2f\n", i, j, grad.first, grad.second, grid[i*size+j].vx, grid[i*size+j].vy, dphi[i*size+j]);
 			//dphi[i*size+j] = -dt * (grad.first * grid[i*size+j].vx + grad.second * grid[i*size+j].vy);
-			dphi[i*size+j] = -dt * (grad.second * grid[i*size+j].vx + grad.first * grid[i*size+j].vy);
+			dphi[i*size+j] = dt * (-grad.first * grid[i*size+j].vx - grad.second * grid[i*size+j].vy);
 		}
 	}
 	for (int i = 0; i < size; i++) {
@@ -450,8 +487,11 @@ void initSim() {
 	printf("init sim\n");
 	grid = new Cell[size*size];
 	oldGrid = new Cell[size*size];
-	//int start = size/2;
-	int start = 2;
+	//int start = 2;
+	int start = size/2;
+
+	int sinkR = size/4;
+	int sinkC = size/2;
 
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
@@ -460,6 +500,17 @@ void initSim() {
 			if (i == start && j == start) {
 				grid[i*size+j].p = 1.0;
 			}
+			//grid[i*size+j].vx = (sinkC - j)/(1.0*size);
+			//grid[i*size+j].vy = (sinkR - i)/(1.0*size);
+			if (i == start)
+				grid[i*size+j].vx = -1;
+			// normalize
+			double len = sqrt(grid[i*size+j].vx*grid[i*size+j].vx + grid[i*size+j].vy*grid[i*size+j].vy);
+			if (len > 0) {
+				grid[i*size+j].vx /= len;
+				grid[i*size+j].vy /= len;
+			}
+			
 			//printf(" %.2f", grid[i*size+j].p);
 			// phi is signed distance function
 			grid[i*size+j].phi = 1 - (abs(i-start) + abs(j-start));
@@ -490,6 +541,7 @@ int main(int argc, char** argv) {
 	headless = false;
 	size = 5;
 	water = false;
+	screenshot = false;
 	for (int i = 1; i < argc; i++) {
 		char* arg = argv[i];
 		if (!strcmp("--headless", arg)) {
@@ -500,6 +552,9 @@ int main(int argc, char** argv) {
 			water = true;
 		} else if (!strcmp("--vel", arg)) {
 			drawVelocity = true;
+		} else if (!strcmp("--screenshot", arg)) {
+			screenshot = true;
+			statScreenshotDir();
 		}
 	}
 	printf("headless: %d, size: %d\n", headless, size);
@@ -513,7 +568,7 @@ int main(int argc, char** argv) {
 	//testDeterminant();
 
 	// TODO don't do if headless
-	glutInitWindowSize(640, 640);   // Set the window's initial width & height
+	glutInitWindowSize(windowWidth, windowHeight);   // Set the window's initial width & height
 	glutInitWindowPosition(50, 50);
 	glutCreateWindow("Single Grid");  // Create window with the given title
 	glutDisplayFunc(display);       // Register callback handler for window re-paint event
