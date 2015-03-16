@@ -281,8 +281,8 @@ double getVelocityDivergence(Cell* g, int i, int j) {
 	double lin = getLinearVelocityDivergence(vals, g[i*size+j]);
 	double quad = getQuadraticVelocityDivergence(vals, g[i*size+j]);
 	//printf("velocity divergence of grid[%d][%d]: linear: %f, quadratic: %f\n", i,j, lin, quad);
-	//return lin;
-	return quad;
+	return lin;
+	//return quad;
 }
 
 void computeResidual() {
@@ -324,7 +324,7 @@ void computeResidual() {
 	//printf("done residual\n");
 }
 
-void relax(int r) {
+void relaxJacobi(int r) {
 	//printf("relaxing %d times. residual matrix:\n", r);
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
@@ -374,6 +374,54 @@ void relax(int r) {
 		}
 	}
 	//printf("relaxing took %d cycles\n", cycles);
+}
+
+void relaxGaussSiedel(int r) {
+	//printf("relaxing %d times. residual matrix:\n", r);
+	for (int i = 0; i < size; i++) {
+		for (int j = 0; j < size; j++) {
+			grid[i*size+j].dp = 0; // TODO what is better initial guess?
+			//printf(" %.3f", grid[i*size+j].R);
+		}
+		//printf("\n");
+	}
+	
+	bool done = false;
+	int cycles = 0;
+	while (/*r-- > 0 && !done */!done) {
+		cycles++;
+		done = true;
+		// Relax(dp, R): dp <-- (sum of adjacent dp - h^2*R)/4
+		for (int i = 0; i < size; i++) {
+			for (int j = 0; j < size; j++) {
+				double pSum = 0.0;
+				double oldDif = grid[i*size+j].dp;
+				for (int k = 0; k < 4; k++) {
+					int newi = i + deltas[k][0];
+					int newj = j + deltas[k][1];
+					if (newi < 0 || newi >= size || newj <0 || newj >= size) {
+						pSum += grid[i*size+j].dp; // if off, use this pressure
+						continue;
+					}
+					pSum += grid[newi*size+newj].dp;
+				}
+				
+				grid[i*size+j].dp = (pSum - ( (grid[i*size+j].R)/(size*size) ) )/4.0;
+				double diff = oldDif - grid[i*size+j].dp;
+				if (fabs(diff) > eps) {
+					done = false;
+					//printf("relaxing[%d][%d]: pSum: %f, R: %f, result: %f, diff from old: %f\n", i, j, pSum, grid[i*size+j].R, newdp[i*size+j], diff);
+					//printf("get out\n");
+				}
+			}
+		}
+	}
+	//printf("relaxing took %d cycles\n", cycles);
+}
+
+void relax(int r ){
+	//relaxJacobi(r);
+	relaxGaussSiedel(r);
 }
 
 void runStep() {
