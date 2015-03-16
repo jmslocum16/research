@@ -291,19 +291,18 @@ void computeResidual() {
 	doneVCycle = true;
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
-			// compute it: R = div(vx, vy) - 1/(ha)*sum of face gradients
+			// compute it: R = div(vx, vy) - 1/(ha)*sum of (s * grad) for each face
 			double faceGradSum = 0.0;
 			for (int k = 0; k < 4; k++) {
 				int newi = i + deltas[k][0];
 				int newj = j + deltas[k][1];
 				if (newi < 0 || newi >= size || newj <0 || newj >= size) continue; // 0 face gradient at boundary condition
 				// integral around the edge of flux, or side length * face gradient
-				//faceGradSum += 1.0/size * (grid[newi*size+newj].p - grid[i*size+j].p)/ (1.0/size);
-				faceGradSum += grid[newi*size+newj].p - grid[i*size+j].p;
+				//faceGradSum += 1 * (grid[newi*size+newj].p - grid[i*size+j].p)/ (1.0/size); // s is always 1
+				faceGradSum += size * (grid[newi*size+newj].p - grid[i*size+j].p);
 			}
 			// h = length of cell = 1.0/size
 			// a = "fluid volume fraction of the cell". Since no boundaries cutting through cell, always 1
-			// 1/ha = 1/(1/(size^3)) = size^3....
 			
 			double divV = getVelocityDivergence(grid, i, j);
 			// double flux = 1/ha * faceGradSum = 1/(1/size * 1) * faceGradSum = size * faceGradSum;
@@ -463,10 +462,8 @@ void runStep() {
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
 			std::pair<double, double> grad = getPressureGradient(grid, i, j);
-			grid[i*size+j].vx -= grad.first * dt;
-			grid[i*size+j].vy -= grad.second * dt;
-			//grid[i*size+j].vx += grad.first * dt;
-			//grid[i*size+j].vy += grad.second * dt;
+			//grid[i*size+j].vx -= grad.first * dt;
+			//grid[i*size+j].vy -= grad.second * dt;
 
 
 
@@ -477,8 +474,6 @@ void runStep() {
 			if (j == 0 || j == size-1) {
 				grid[i*size+j].vx = 0.0;
 			}
-			//grid[i*size+j].vx -= grad.first * dt;
-			//grid[i*size+j].vy -= grad.second * dt;
 
 		}
 	}
@@ -527,10 +522,10 @@ void initSim() {
 			if (i == start && j == start) {
 				grid[i*size+j].p = 1.0;
 			}
-			grid[i*size+j].vx = (sinkC - j)/(1.0*size);
-			grid[i*size+j].vy = (sinkR - i)/(1.0*size);
-			//if (i == start)
-			//	grid[i*size+j].vx = -1;
+			//grid[i*size+j].vx = (sinkC - j)/(1.0*size);
+			//grid[i*size+j].vy = (sinkR - i)/(1.0*size);
+			if (i == start)
+				grid[i*size+j].vx = -1;
 			// normalize
 			double len = sqrt(grid[i*size+j].vx*grid[i*size+j].vx + grid[i*size+j].vy*grid[i*size+j].vy);
 			if (len > 0) {
