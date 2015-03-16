@@ -24,7 +24,7 @@ bool drawVelocity;
 bool screenshot;
 int frameNumber = 0;
 
-double dt = .05;
+double dt = .02;
 
 
 // GRID[R][C] maps to first quadrant by R->Y, C->X!!
@@ -152,8 +152,6 @@ void display() {
 	if (screenshot) {
 		saveScreen();
 	}
-
-	frameNumber++;
 }
 
 double deltas[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
@@ -169,7 +167,7 @@ std::pair<double, double> getPressureGradient(Cell* g, int i, int j) {
 			vals[k] = g[newi*size+newj].p;
 		}
 	}
-	return std::make_pair((vals[0] - vals[1])/(2*size), (vals[2]-vals[3])/(2*size));
+	return std::make_pair(size * (vals[2] - vals[3])/2, size * (vals[0]-vals[1])/2);
 }
 
 std::pair<double, double> getLevelSetGradient(Cell* g, int i, int j) {
@@ -183,7 +181,7 @@ std::pair<double, double> getLevelSetGradient(Cell* g, int i, int j) {
 			vals[k] = g[newi*size+newj].phi;
 		}
 	}
-	return std::make_pair((vals[0] - vals[1])/(2*size), (vals[2]-vals[3])/(2*size));
+	return std::make_pair(size * (vals[2] - vals[3])/2, size * (vals[0]-vals[1])/2);
 }
 
 double determinant(double col1[], double col2[], double col3[]) {
@@ -286,7 +284,7 @@ double getVelocityDivergence(Cell* g, int i, int j) {
 }
 
 void computeResidual() {
-	//printf("computing residual\n");
+	printf("computing residual\n");
 	
 	doneVCycle = true;
 	for (int i = 0; i < size; i++) {
@@ -315,12 +313,13 @@ void computeResidual() {
 			if (fabs(R) > eps) {
 				doneVCycle = false;
 				//printf("more work to do here, %f is bigger than epsilon of %f\n", fabs(grid[d][i*size+j].R)/(size*size), eps);
-				//printf("for cell[%d][%d], divV: %f, flux: %f, R: %f\n", i, j, divV, flux, R);
 			} else {
 				//printf("done with this cell already, %f is smaller than epsilon of %f\n", fabs(grid[i*size+j].R), eps);
 			}
+			//printf("for cell[%d][%d], divV: %f, flux: %f, R: %f\n", i, j, divV, flux, R);
 		}
 	}
+	
 	//printf("done residual\n");
 }
 
@@ -510,8 +509,8 @@ void runStep() {
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
 			std::pair<double, double> grad = getPressureGradient(grid, i, j);
-			//grid[i*size+j].vx -= grad.first * dt;
-			//grid[i*size+j].vy -= grad.second * dt;
+			grid[i*size+j].vx -= grad.first * dt;
+			grid[i*size+j].vy -= grad.second * dt;
 
 
 
@@ -551,6 +550,8 @@ void runStep() {
 
 	
 	printf("done step, took %d iterations\n", numCycles);
+	// increase frame number here instead of in display so that you get 1 of each frame, not dependent on glut's redrawing, like on alt-tabbing or anything
+	frameNumber++;
 }
 
 void initSim() {
@@ -579,6 +580,15 @@ void initSim() {
 			if (len > 0) {
 				grid[i*size+j].vx /= len;
 				grid[i*size+j].vy /= len;
+			}
+
+
+			// clamp velocity
+			if (i == 0 || i == size-1) {
+				grid[i*size+j].vy = 0.0;
+			}
+			if (j == 0 || j == size-1) {
+				grid[i*size+j].vx = 0.0;
 			}
 			
 			//printf(" %.2f", grid[i*size+j].p);
