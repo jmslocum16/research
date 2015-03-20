@@ -2,3 +2,5 @@
 *.o
 */screenshots/*
 grid/grid
+multigrid/multigrid
+multigrid/old
