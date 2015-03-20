@@ -259,7 +259,7 @@ double getQuadraticVelocityDivergence(double vals[], Cell& center) {
 }
 
 // returns shitty approximation
-double getLinearVelocityDivergence(double vals[], Cell& center, int size) {
+double getLinearVelocityDivergence(double vals[], int size) {
 	//double dx = (vals[2] - vals[3]) / (size + sizes[2]/2.0 + sizes[3]/2.0);
 	//double dy = (vals[0] - vals[1]) / (size + sizes[0]/2.0 + sizes[1]/2.0);
 	double dx = (vals[2] - vals[3]) / (2.0/size);
@@ -281,15 +281,18 @@ double getVelocityDivergence(Cell** g, int d, int i, int j) {
 		vals[k] = (k < 2) ? c.vy : c.vx;
 	}
 
-	double lin = getLinearVelocityDivergence(vals, g[d][i*size+j], size);
+
+	double lin = getLinearVelocityDivergence(vals, size);
 	double quad = getQuadraticVelocityDivergence(vals, g[d][i*size+j]);
 	//printf("velocity divergence of grid[%d][%d]: linear: %f, quadratic: %f\n", i,j, lin, quad);
+
+	//printf ("divV for [%d][%d][%d]: vals: %f, %f, %f, %f, divV: %f\n", d, i, j, vals[0], vals[1], vals[2], vals[3], lin);
 	return lin;
 	//return quad;
 }
 
 void computeResidual(int d) {
-	printf("computing residual\n");
+	printf("computing residual for level %d\n", d);
 
 	int size = 1<<d;
 	
@@ -316,9 +319,10 @@ void computeResidual(int d) {
 				double R = divV - flux;
 				
 				grid[d][i*size+j].R = R;
+				//printf("at [%d][%d], divV: %f, flux: %f, R: %f\n", i, j, divV, flux, R);
 			} else {
 				for (int k = 0; k < 4; k++) {
-					grid[d][i*size+j].R += grid[d+1][(i+k/2)*2*size+2*(j+k%2)].R;
+					grid[d][i*size+j].R += grid[d+1][(2*i+k/2)*2*size+2*j+(k%2)].R;
 				}
 				grid[d][i*size+j].R /= 4.0;
 			}
@@ -326,15 +330,16 @@ void computeResidual(int d) {
 			// if a*R > e, not done
 			if (fabs(grid[d][i*size+j].R) > eps) {
 				doneVCycle = false;
-				//printf("more work to do here, %f is bigger than epsilon of %f\n", fabs(grid[d][i*size+j].R)/(size*size), eps);
+				//printf("more work to do at [%d][%d], %f is bigger than epsilon of %f\n", i, j, grid[d][i*size+j].R, eps);
 			} else {
-				//printf("done with this cell already, %f is smaller than epsilon of %f\n", fabs(grid[i*size+j].R), eps);
+				//printf("done with this cell already, %f is smaller than epsilon of %f\n", fabs(grid[d][i*size+j].R), eps);
 			}
-			//printf("for cell[%d][%d], divV: %f, flux: %f, R: %f\n", i, j, divV, flux, R);
+			printf(" %.3f", grid[d][i*size+j].R);
 		}
+		printf("\n");
 	}
 	
-	//printf("done residual\n");
+	printf("done residual\n");
 }
 
 void relaxJacobi(int d, int r) {
@@ -342,7 +347,7 @@ void relaxJacobi(int d, int r) {
 	int cycles = 0;
 	int size = 1<<d;
 	double newdp[size*size];
-	while (/*r-- > 0 && !done */!done) {
+	while (/*r-- > 0 && */!done) {
 		cycles++;
 		done = true;
 		// Relax(dp, R): dp <-- (sum of adjacent dp - h^2*R)/4
@@ -364,7 +369,7 @@ void relaxJacobi(int d, int r) {
 				double diff = oldDif - newdp[i*size+j];
 				if (fabs(diff) > eps) {
 					done = false;
-					//printf("relaxing[%d][%d]: pSum: %f, R: %f, result: %f, diff from old: %f\n", i, j, pSum, grid[i*size+j].R, newdp[i*size+j], diff);
+					//printf("relaxing[%d][%d]: pSum: %f, R: %f, result: %f, diff from old: %f\n", i, j, pSum, grid[d][i*size+j].R, newdp[i*size+j], diff);
 					//printf("get out\n");
 				}
 			}
@@ -385,7 +390,7 @@ void relaxGaussSiedel(int d, int r) {
 	bool done = false;
 	int size = 1<<d;
 	int cycles = 0;
-	while (/*r-- > 0 && !done */!done) {
+	while (r-- > 0 && !done /*!done*/) {
 		cycles++;
 		done = true;
 		// Relax(dp, R): dp <-- (sum of adjacent dp - h^2*R)/4
@@ -407,7 +412,7 @@ void relaxGaussSiedel(int d, int r) {
 				double diff = oldDif - grid[d][i*size+j].dp;
 				if (fabs(diff) > eps) {
 					done = false;
-					//printf("relaxing[%d][%d]: pSum: %f, R: %f, result: %f, diff from old: %f\n", i, j, pSum, grid[i*size+j].R, newdp[i*size+j], diff);
+					printf("relaxing[%d][%d]: pSum: %f, R: %f, result: %f, diff from old: %f\n", i, j, pSum, grid[d][i*size+j].R, grid[d][i*size+j].dp, diff);
 					//printf("get out\n");
 				}
 			}
@@ -419,22 +424,26 @@ void relaxGaussSiedel(int d, int r) {
 void relax(int d, int r) {
 	int size = 1<<d;
 
+	printf("relaxing level %d\n", d);
 	// get initial gress from next level, if possible
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
 			if (d == 0) {
 				grid[d][i*size+j].dp = 0; // TODO what is better initial guess?
 			} else {
-				grid[d][i*size+j].dp = grid[d][i/2 * size/2 + j/2].dp;
+				// inject from higher level
+				grid[d][i*size+j].dp = grid[d-1][i/2 * size/2 + j/2].dp;
+				// printf("initial guess for [%d][%d].dp is %f\n", i, j, grid[d][i*size+j].dp);
 			}
+			printf(" %.3f", grid[d][i*size+j].dp);
 			//printf(" %.3f", grid[i*size+j].R);
 		}
-		//printf("\n");
+		printf("\n");
 	}
 	
 
-	//relaxJacobi(d, r);
-	relaxGaussSiedel(d, r);
+	relaxJacobi(d, r);
+	//relaxGaussSiedel(d, r);
 }
 
 void runStep() {
@@ -463,6 +472,8 @@ void runStep() {
 				grid[d][index].vx = oldGrid[d][index].vx;
 				grid[d][index].vy = oldGrid[d][index].vy;
 				grid[d][index].phi = oldGrid[d][index].phi;
+
+				if (d != levels - 1) continue;
 				
 				// U** = Un - An*dt, An = div(V) * V
 				double divV = getVelocityDivergence(oldGrid, d, i, j);
@@ -500,23 +511,22 @@ void runStep() {
 			computeResidual(d);
 		}
 
-		relax(0, MAX_RELAX_COUNT);
+		//relax(0, MAX_RELAX_COUNT);
+		grid[0][0].dp = 0;
+		// Trying to not relax level 0 since it makes no sense to do so...
 
 		for (int d = 1; d < levels; d++) {
-			relax(d, OPTIMIZED_RELAX_COUNT);
+			relax(d, (d==1) ? MAX_RELAX_COUNT : OPTIMIZED_RELAX_COUNT);
 		}
 
 		//printf("correcting pressure\n");
 		// use corrections to improve pressure
-		for (int d = 0; d < levels; d++) {
-			int size = 1<<d;
-			for (int i = 0; i < size; i++) {
-				for (int j = 0; j < size; j++) {
-					grid[d][i*size+j].p += grid[d][i*size+j].dp;
-				}
+		int size = 1<<(levels-1);
+		for (int i = 0; i < size; i++) {
+			for (int j = 0; j < size; j++) {
+				grid[levels - 1][i*size+j].p += grid[levels - 1][i*size+j].dp;
 			}
 		}
-
 		// TODO REMOVE
 		/*printf("printing pressure after corrections\n");
 		for (int i = 0; i < size; i++) {
@@ -531,34 +541,32 @@ void runStep() {
 		computeResidual(levels - 1);
 
 		// TODO REMOVE
-		//doneVCycle = true;
-		//if (numCycles == 10) break;
+		// doneVCycle = true;
+		//if (numCycles == 8) break;
 
 		//printf("end v cycle\n");
 	}
 
 	// correct velocity with updated pressure field to make non-divergent
-	for (int d = 0; d < levels; d++) {
-		int size = 1<<d;
-		for (int i = 0; i < size; i++) {
-			for (int j = 0; j < size; j++) {
-				std::pair<double, double> grad = getPressureGradient(grid, d, i, j);
-				grid[d][i*size+j].vx -= grad.first * dt;
-				grid[d][i*size+j].vy -= grad.second * dt;
-				//grid[d][i*size+j].vx -= grad.first;
-				//grid[d][i*size+j].vy -= grad.second;
-	
-	
-	
-				// clamp velocity on boundary condition
-				if (i == 0 || i == size-1) {
-					grid[d][i*size+j].vy = 0.0;
-				}
-				if (j == 0 || j == size-1) {
-					grid[d][i*size+j].vx = 0.0;
-				}
-	
+	int size = 1<<(levels - 1);
+	for (int i = 0; i < size; i++) {
+		for (int j = 0; j < size; j++) {
+			std::pair<double, double> grad = getPressureGradient(grid, levels - 1, i, j);
+			grid[levels - 1][i*size+j].vx -= grad.first * dt;
+			grid[levels - 1][i*size+j].vy -= grad.second * dt;
+			//grid[levels - 1][i*size+j].vx -= grad.first;
+			//grid[levels - 1][i*size+j].vy -= grad.second;
+
+
+
+			// clamp velocity on boundary condition
+			if (i == 0 || i == size-1) {
+				grid[levels - 1][i*size+j].vy = 0.0;
 			}
+			if (j == 0 || j == size-1) {
+				grid[levels - 1][i*size+j].vx = 0.0;
+			}
+
 		}
 	}
 
@@ -566,16 +574,14 @@ void runStep() {
 	printf("advecting phi\n");
 	// dphi/dt + v dot grad(phi) = 0
 	// dphi/dt = -v dot grad(phi)
-	for (int d = 0; d < levels; d++) {
-		int size = 1<<d;
-		double dphi[size*size];
-		for (int i = 0; i < size; i++) {
-			for (int j = 0; j < size; j++) {
-				std::pair<double, double> grad = getLevelSetGradient(grid, d, i, j);
-				//printf("level set gradient at [%d][%d] is (%.2f, %.2f), v is (%.2f, %.2f), dphi is %.2f\n", i, j, grad.first, grad.second, grid[i*size+j].vx, grid[i*size+j].vy, dphi[i*size+j]);
-				//dphi[i*size+j] = -dt * (grad.first * grid[i*size+j].vx + grad.second * grid[i*size+j].vy);
-				dphi[i*size+j] = dt * (-grad.first * grid[d][i*size+j].vx - grad.second * grid[d][i*size+j].vy);
-			}
+	size = 1 << (levels - 1);
+	double dphi[size*size];
+	for (int i = 0; i < size; i++) {
+		for (int j = 0; j < size; j++) {
+			std::pair<double, double> grad = getLevelSetGradient(grid, levels - 1, i, j);
+			//printf("level set gradient at [%d][%d] is (%.2f, %.2f), v is (%.2f, %.2f), dphi is %.2f\n", i, j, grad.first, grad.second, grid[i*size+j].vx, grid[i*size+j].vy, dphi[i*size+j]);
+			//dphi[i*size+j] = -dt * (grad.first * grid[i*size+j].vx + grad.second * grid[i*size+j].vy);
+			dphi[i*size+j] = dt * (-grad.first * grid[levels - 1][i*size+j].vx - grad.second * grid[levels-1][i*size+j].vy);
 		}
 	}
 	/*for (int i = 0; i < size; i++) {
@@ -618,21 +624,12 @@ void initSim() {
 			if (i == start)
 				grid[level][i*size+j].vx = -1;
 			// normalize
-			double len = sqrt(grid[level][i*size+j].vx*grid[level][i*size+j].vx + grid[level][i*size+j].vy*grid[level][i*size+j].vy);
+			/*double len = sqrt(grid[level][i*size+j].vx*grid[level][i*size+j].vx + grid[level][i*size+j].vy*grid[level][i*size+j].vy);
 			if (len > 0) {
 				grid[level][i*size+j].vx /= len;
 				grid[level][i*size+j].vy /= len;
-			}
+			}*/
 
-
-			// clamp velocity
-			if (i == 0 || i == size-1) {
-				grid[level][i*size+j].vy = 0.0;
-			}
-			if (j == 0 || j == size-1) {
-				grid[level][i*size+j].vx = 0.0;
-			}
-			
 			//printf(" %.2f", grid[i*size+j].p);
 			// phi is signed distance function
 			grid[level][i*size+j].phi = 1 - (abs(i-start) + abs(j-start));
@@ -659,8 +656,23 @@ void initSim() {
 				grid[d][i*size+j].vy /= 4.0;
 				grid[d][i*size+j].phi /= 4.0;
 				printf(" %.2f", grid[d][i*size+j].p);
+			
 			}
 			printf("\n");
+		}
+	}
+	// clamp starting velocity
+	for (int d = 0; d < levels; d++) {
+		int size = 1<<d;
+		for (int i = 0; i < size; i++) {
+			for (int j = 0; j < size; j++) {
+				if (i == 0 || i == size-1) {
+					grid[d][i*size+j].vy = 0.0;
+				}
+				if (j == 0 || j == size-1) {
+					grid[d][i*size+j].vx = 0.0;
+				}
+			}
 		}
 	}
 }
@@ -727,7 +739,7 @@ int main(int argc, char** argv) {
 	// TODO don't do if headless
 	glutInitWindowSize(windowWidth, windowHeight);   // Set the window's initial width & height
 	glutInitWindowPosition(50, 50);
-	glutCreateWindow("Single Grid");  // Create window with the given title
+	glutCreateWindow("MultiGrid");  // Create window with the given title
 	glutDisplayFunc(display);       // Register callback handler for window re-paint event
 	glutKeyboardFunc(keyboard);
 	initGL();                       // Our own OpenGL initialization
