@@ -690,10 +690,14 @@ void runStep() {
 
 		//printf("correcting pressure\n");
 		// use corrections to improve pressure
-		int size = 1<<(levels-1);
-		for (int i = 0; i < size; i++) {
-			for (int j = 0; j < size; j++) {
-				grid[levels - 1][i*size+j].p += grid[levels - 1][i*size+j].dp;
+		for (int d = 0; d < levels; d++) {
+			int size = 1<<d;
+			for (int i = 0; i < size; i++) {
+				for (int j = 0; j < size; j++) {
+					if (grid[d][i*size+j].used) {
+						grid[d][i*size+j].p += grid[d][i*size+j].dp;
+					}
+				}
 			}
 		}
 		// TODO REMOVE
@@ -717,25 +721,27 @@ void runStep() {
 	}
 
 	// correct velocity with updated pressure field to make non-divergent
-	int size = 1<<(levels - 1);
-	for (int i = 0; i < size; i++) {
-		for (int j = 0; j < size; j++) {
-			std::pair<double, double> grad = getPressureGradient(grid, levels - 1, i, j);
-			grid[levels - 1][i*size+j].vx -= grad.first * dt;
-			grid[levels - 1][i*size+j].vy -= grad.second * dt;
-			//grid[levels - 1][i*size+j].vx -= grad.first;
-			//grid[levels - 1][i*size+j].vy -= grad.second;
-
-
-
-			// clamp velocity on boundary condition
-			if (i == 0 || i == size-1) {
-				grid[levels - 1][i*size+j].vy = 0.0;
+	for (int d = 0; d < levels; d++) {
+		int size = 1<<d;
+		for (int i = 0; i < size; i++) {
+			for (int j = 0; j < size; j++) {
+				if (!grid[d][i*size+j].used) continue;
+				std::pair<double, double> grad = getPressureGradient(grid, levels - 1, i, j);
+				grid[levels - 1][i*size+j].vx -= grad.first * dt;
+				grid[levels - 1][i*size+j].vy -= grad.second * dt;
+				//grid[levels - 1][i*size+j].vx -= grad.first;
+				//grid[levels - 1][i*size+j].vy -= grad.second;
+	
+	
+	
+				// clamp velocity on boundary condition
+				if (i == 0 || i == size-1) {
+					grid[levels - 1][i*size+j].vy = 0.0;
+				}
+				if (j == 0 || j == size-1) {
+					grid[levels - 1][i*size+j].vx = 0.0;
+				}	
 			}
-			if (j == 0 || j == size-1) {
-				grid[levels - 1][i*size+j].vx = 0.0;
-			}
-
 		}
 	}
 
