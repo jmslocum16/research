@@ -31,6 +31,7 @@ double dt = .02;
 
 struct Cell {
 	double p, vx, vy, dp, R, phi; // pressure ,x velocity, y velocity, pressure correction, residual, level set value
+	bool used;
 };
 
 struct Cell** grid;
@@ -157,6 +158,103 @@ void display() {
 }
 
 double deltas[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+// for a given delta, the 2 corners to go to on finer levels when calculating face gradients/laplacian
+double corner1[4][2] = {{0, 0}, {1, 0}, {0, 0}, {0, 1}};
+double corner2[4][2] = {{0, 1}, {1, 1}, {1, 0}, {1, 1}};
+
+// finds the highest level used neighbor at the given multilevel
+// returns 2  cells if on the same (higher) level, otherwise returns one and null
+// d is level, (i, j), k is the direction (deltas index). Value initially in level is the target level, value returned in level is the level of the neighboring cell
+// guaranteed d <= target level, otherwise that wouldn't make any sense..
+std::pair<Cell, Cell> getNeighborInDirAtLevel(int d, int i, int j, int k, const int& level) {
+	int size = 1<<d;
+	int newi = i + deltas[k][0];
+	int newj = j + deltas[k][1];
+	if (newi < 0 || newi >= size || newj <0 || newj >= size) {
+		// not on grid, use boundary conditions
+		*level = d;
+		return std::make_pair(grid[d][i*size+j], NULL);
+	} else if (!grid[d][newi*size+newj].used) {
+		// go up until find the used cell
+		int newd = d;
+		while (!grid[newd][newi * (1<<newd) + newj].used) {
+			newi >>= 1;
+			newj >>= 1;
+			newd -= 1;
+		}
+		*level = newd;
+		return std::make_pair(grid[newd][newi * (1<<newd) + newj], NULL);
+	} else if (d == *level) {
+		// simply just your neighbor
+		level* = d;
+		return std::make_pair(grid[newd][newi * size + newj], NULL);
+	} else {
+		int c1i = 2*newi + corner1[k][0];
+		int c1j = 2*newj + corner1[k][1];
+		
+		int c2i = 2*newi + corner2[k][0];
+		int c2j = 2*newj + corner2[k][1];
+		int cd = d + 1;
+		int csize = 1<<cd;
+		while (cd < *level - 1 && grid[cd][c1i * csize + c1j].used && grid[cd][c2i * csize + c2j].used) {
+			cd++;
+			csize <<= 1;
+			c1i = 2*c1i + corner2[k][0];
+			c1j = 2*c1j + corner2[k][1];
+			c2i = 2*c2i + corner1[k][0];
+			c2j = 2*c2j + corner1[k][1];
+		}
+		if (grid[cd][c1i * csize + c1j].used && grid[cd][c2i * csize + c2j].used) {
+			// terminated b/c at bottom level, just return both
+			*level = cd;
+			return std::make_pair(grid[cd][c1i * csize + c1j], grid[cd][c2i * csize + c2j]);
+		} else if (grid[cd][c1i * size + c1j].used) {
+			// terminated because c2 not used anymore. Keep following c1 to the end then return it.
+			while (cd < *level - 1 && grid[cd][c1i * csize + c1j].used) {
+				cd++;
+				csize <<= 1;
+				c1i = 2*c1i + corner2[k][0];
+				c1j = 2*c1j + corner2[k][1];
+			}
+			if (!grid[cd][c1i*csize + c1j].used) {
+				// went one level too far, back it up
+				cd--;
+				csize >>= 1;
+				c1i >>= 1;
+				c1j >>= 1;
+			}
+			*level = cd;
+			return std::make_pair(grid[cd][c1i * csize + c1j], NULL);
+		} else if (grid[cd][c2i * csize + c2j].used) {
+			// terminated because c1 not used anymore. Keep following c2 to the end then return it.
+			while (cd < *level - 1 && grid[cd][c2i * csize + c2j].used) {
+				cd++;
+				csize <<= 1;
+				c2i = 2*c2i + corner1[k][0];
+				c2j = 2*c2j + corner1[k][1];
+			}
+			if (!grid[cd][c2i*csize + c2j].used) {
+				// went one level too far, back it up
+				cd--;
+				csize >>= 1;
+				c2i >>= 1;
+				c2j >>= 1;
+			}
+			*level = cd;
+			return std::make_pair(grid[cd][c2i * csize + c2j], NULL);
+		} else {
+			// neither c1 nor c2 used, but both were on previous level, so back both up 1 level and return both
+			cd--;
+			csize >>= 1;
+			c1i >>= 1;
+			c1j >>= 1;
+			c2i >>= 1;
+			c2j >>= 1;
+			*level = cd;
+			return std::make_pair(grid[cd][c1i * csize + c1j], grid[cd][c2i * csize + c2j]);
+		}
+	}
+}
 
 std::pair<double, double> getPressureGradient(Cell** g, int d, int i, int j) {
 	int size = 1<<d;
@@ -472,8 +570,9 @@ void runStep() {
 				grid[d][index].vx = oldGrid[d][index].vx;
 				grid[d][index].vy = oldGrid[d][index].vy;
 				grid[d][index].phi = oldGrid[d][index].phi;
+				grid[d][index].used = oldGrid[d][index].used;
 
-				if (d != levels - 1) continue;
+				if (!grid[d][index].used) continue;
 				
 				// U** = Un - An*dt, An = div(V) * V
 				double divV = getVelocityDivergence(oldGrid, d, i, j);
@@ -496,9 +595,6 @@ void runStep() {
 	}
 	// grid's vx and vy are now provisional velocity
 
-	// TODO clamp velocity along border positions?
-
-	// project velocity to get divergent free velocity and pressure
 	computeResidual(levels - 1);
 
 	int numCycles = 0;
@@ -634,6 +730,7 @@ void initSim() {
 			// phi is signed distance function
 			grid[level][i*size+j].phi = 1 - (abs(i-start) + abs(j-start));
 			grid[level][i*size+j].phi /= size;
+			grid[level][i*size+j].used = true;
 			printf (" %.2f", grid[level][i*size+j].p);
 		}
 		printf("\n");
@@ -655,6 +752,7 @@ void initSim() {
 				grid[d][i*size+j].vx /= 4.0;
 				grid[d][i*size+j].vy /= 4.0;
 				grid[d][i*size+j].phi /= 4.0;
+				grid[d][i*size+j].used = true;
 				printf(" %.2f", grid[d][i*size+j].p);
 			
 			}
