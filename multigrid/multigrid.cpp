@@ -65,6 +65,69 @@ void statScreenshotDir() {
 	 // meh
 }
 
+double minP;
+double maxP;
+double maxMag;
+
+
+void drawMultilevel(int d, int i, int j, int ml) {
+	assert (d <= ml);
+	int size = 1<<d;
+	if (!grid[d][i*size+j].used) {
+		return;
+	} else if (d == ml || !grid[d+1][4*i*size+2*j].used) {
+		// draw it
+		if (water) {
+			if (grid[d][i*size+j].phi >= 0) {
+				double val = fmin(1.0, grid[d][i*size+j].phi);
+				glColor3f(0.0, 0.0, val);
+				
+				double x = -1.0 + (2.0 * j) / size;
+				double y = -1.0 + (2.0 * i) / size;
+				glRectf(x, y, x + 2.0/size, y + 2.0/size);
+			}
+		} else {
+			double redPercent = 0.0;
+			double bluePercent = 0.0;
+			if (grid[levelToDisplay][i*size+j].p > 0) {
+				redPercent = grid[levelToDisplay][i*size+j].p/maxP;
+			}
+			if (grid[levelToDisplay][i*size+j].p < 0) {
+				bluePercent = grid[levelToDisplay][i*size+j].p/-minP;
+			}
+			
+			//printf("percent: %lf\n", percent);
+			glColor3f(redPercent, 0, bluePercent);
+			double x = -1.0 + (2.0 * j) / size;
+			double y = -1.0 + (2.0 * i) / size;
+			//double y = 1.0 - (2.0 * i) / size; 
+			glRectf(x, y, x + 2.0/size, y + 2.0/size);
+		}
+		if (drawVelocity && d <= 5) { // if size is > 40 this is pretty useless
+			if (maxMag >= eps) {
+				glColor3f(0.0, 1.0, 0.0);
+				double vx = grid[d][i*size+j].vx;
+				double vy = grid[d][i*size+j].vy;
+				double mag = sqrt(vx*vx + vy*vy);
+				if (mag >= eps) {
+					glBegin(GL_LINES);
+					// max size is 1.0/side length, scaled by the max magnitude
+					double x = -1.0 + (2.0*j) / size + 1.0/size;
+					double y = -1.0 + (2.0*i) / size + 1.0/size;
+					glVertex2f(x, y);
+					double scale = maxMag * size;
+					glVertex2f(x + vx / scale, y + vy /scale);
+					glEnd();
+				}
+			}
+		}
+	} else {
+		// draw children
+		for (int k = 0; k < 4; k++) {
+			drawMultilevel(d + 1, i*2 + (k/2), j*2 + (k%2), ml);
+		}
+	}
+}
 
 /* Handler for window-repaint event. Call back when the window first appears and
    whenever the window needs to be re-painted. */
@@ -75,81 +138,40 @@ void display() {
 
 	int size = 1<<levelToDisplay;
 
-	if (water) {
-		for (int i = 0; i < size; i++) {
-			for (int j = 0; j < size; j++) {
-				if (grid[levelToDisplay][i*size+j].phi < 0) continue;
-				double val = fmin(1.0, grid[levelToDisplay][i*size+j].phi);
-				glColor3f(0.0, 0.0, val);
-				
-				double x = -1.0 + (2.0 * j) / size;
-				double y = -1.0 + (2.0 * i) / size;
-				glRectf(x, y, x + 2.0/size, y + 2.0/size);
-			}
-		}
-	} else {
-		double minP = 100000000.0;
-		double maxP = -100000000.0;
-	
-		for (int i = 0; i < size; i++) {
-			for (int j = 0; j < size; j++) {
-				minP = std::min(minP, grid[levelToDisplay][i*size+j].p);
-				maxP = std::max(maxP, grid[levelToDisplay][i*size+j].p);
-			}
-		}
-		
-		for (int i = 0; i < size; i++) {
-			for (int j = 0; j < size; j++) {
-				double redPercent = 0.0;
-				double bluePercent = 0.0;
-				if (grid[levelToDisplay][i*size+j].p > 0) {
-					redPercent = grid[levelToDisplay][i*size+j].p/maxP;
-				}
-				if (grid[levelToDisplay][i*size+j].p < 0) {
-					bluePercent = grid[levelToDisplay][i*size+j].p/-minP;
-				}
-				
-				//printf("percent: %lf\n", percent);
-				glColor3f(redPercent, 0, bluePercent);
-				double x = -1.0 + (2.0 * j) / size;
-				double y = -1.0 + (2.0 * i) / size;
-				//double y = 1.0 - (2.0 * i) / size; 
-				glRectf(x, y, x + 2.0/size, y + 2.0/size);
-			}
-		}
-	}
+	if (!water) {
+		minP = 100000000.0;
+		maxP = -100000000.0;
 
-	if (drawVelocity && size <= 40) { // if size is > 40 this is pretty useless
-		double maxMag = 0.0;
-		for (int i = 0; i < size; i++) {
-			for (int j = 0; j < size; j++) {
-				double x = grid[levelToDisplay][i*size+j].vx;
-				double y = grid[levelToDisplay][i*size+j].vy;
-				maxMag = std::max(maxMag, sqrt(x*x + y*y));
-			}
-		}
-
-		if (maxMag >= eps) {
-			glColor3f(0.0, 1.0, 0.0);
-			glBegin(GL_LINES);
+		for (int d = 0; d <= levelToDisplay; d++) {
+			int size = 1<<d;
 			for (int i = 0; i < size; i++) {
 				for (int j = 0; j < size; j++) {
-					double vx = grid[levelToDisplay][i*size+j].vx;
-					double vy = grid[levelToDisplay][i*size+j].vy;
-					double mag = sqrt(vx*vx + vy*vy);
-					if (mag < eps) continue;
-					// max size is 1.0/side length, scaled by the max magnitude
-					double x = -1.0 + (2.0*j) / size + 1.0/size;
-					double y = -1.0 + (2.0*i) / size + 1.0/size;
-					glVertex2f(x, y);
-					double scale = maxMag * size;
-					glVertex2f(x + vx / scale, y + vy /scale);
+					if (grid[d][i*size+j].used) {
+						minP = std::min(minP, grid[d][i*size+j].p);
+						maxP = std::max(maxP, grid[d][i*size+j].p);
+					}
 				}
 			}
-			glEnd();
+		}
+	}
+	if (drawVelocity && levelToDisplay <= 5) {
+		maxMag = 0.0;
+		for (int d = 0; d <= levelToDisplay; d++) {
+			int size = 1<<d;
+			for (int i = 0; i < size; i++) {
+				for (int j = 0; j < size; j++) {
+					double x = grid[d][i*size+j].vx;
+					double y = grid[d][i*size+j].vy;
+					maxMag = std::max(maxMag, sqrt(x*x + y*y));
+				}
+			}
 		}
 	}
 
+
+	drawMultilevel(0, 0, 0, levelToDisplay);
+
+	
 	glFlush();  // Render now
 
 	// capture screen if necessary
@@ -157,6 +179,8 @@ void display() {
 		saveScreen();
 	}
 }
+
+
 
 double deltas[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
 // for a given delta, the 2 corners to go to on finer levels when calculating face gradients/laplacian
@@ -200,7 +224,7 @@ std::pair<Cell*, Cell*> getNeighborInDir(Cell** g, int d, int i, int j, int k, i
 		int c2j = 2*newj + corner2[k][1];
 		int cd = d + 1;
 		int csize = 1<<cd;
-		while (cd < *level - 1 && g[cd][c1i * csize + c1j].used && g[cd][c2i * csize + c2j].used) {
+		while (cd < *level && g[cd][c1i * csize + c1j].used && g[cd][c2i * csize + c2j].used) {
 			cd++;
 			csize <<= 1;
 			c1i = 2*c1i + corner2[k][0];
@@ -212,9 +236,9 @@ std::pair<Cell*, Cell*> getNeighborInDir(Cell** g, int d, int i, int j, int k, i
 			// terminated b/c at bottom level, just return both
 			*level = cd;
 			return std::make_pair(&g[cd][c1i * csize + c1j], &g[cd][c2i * csize + c2j]);
-		} else if (g[cd][c1i * size + c1j].used) {
+		} else if (g[cd][c1i * csize + c1j].used) {
 			// terminated because c2 not used anymore. Keep following c1 to the end then return it.
-			while (cd < *level - 1 && g[cd][c1i * csize + c1j].used) {
+			while (cd < *level && g[cd][c1i * csize + c1j].used) {
 				cd++;
 				csize <<= 1;
 				c1i = 2*c1i + corner2[k][0];
@@ -231,7 +255,7 @@ std::pair<Cell*, Cell*> getNeighborInDir(Cell** g, int d, int i, int j, int k, i
 			return std::make_pair(&g[cd][c1i * csize + c1j], nullCell);
 		} else if (g[cd][c2i * csize + c2j].used) {
 			// terminated because c1 not used anymore. Keep following c2 to the end then return it.
-			while (cd < *level - 1 && g[cd][c2i * csize + c2j].used) {
+			while (cd < *level && g[cd][c2i * csize + c2j].used) {
 				cd++;
 				csize <<= 1;
 				c2i = 2*c2i + corner1[k][0];
@@ -258,6 +282,126 @@ std::pair<Cell*, Cell*> getNeighborInDir(Cell** g, int d, int i, int j, int k, i
 			return std::make_pair(&g[cd][c1i * csize + c1j], &g[cd][c2i * csize + c2j]);
 		}
 	}
+}
+
+bool assertNeighbors(Cell* n1, Cell* n2, Cell* realN1, Cell* realN2) {
+	if (n2 == NULL) {
+		return realN2 == NULL && n1 == realN1;
+	} else {
+		return (n1 == realN1 && n2 == realN2) || (n1 == realN2 && n2 == realN1);
+	}
+}
+
+// test multilevel neighbor functions
+// construct following multigrid with 4 levels:
+/* - - - - - - - -
+ *|       | | |   |
+ *         - -     
+ *|       | | |   |
+ *         - - - -
+ *|       | | |   |
+ *         - -
+ *|       | | |   |
+ * - - - - - - - - 
+ *|   |   |       |
+ *
+ *|   |   |       |
+ * - - - -
+ *|   |   |       |
+ *
+ *|   |   |       |
+ * - - - - - - - -
+ */
+void testMultilevelNeighbors() {
+	// construct grid
+	Cell** testGrid = new Cell*[4];
+	for (int i = 0; i < 4; i++) {
+		int size = 1<<i;
+		testGrid[i] = new Cell[size*size]; 
+		for (int j = 0; j < size*size; j++) {
+			testGrid[i][j].used = false;
+		}
+	}
+
+	testGrid[0][0].used = true;
+	// level 1
+	testGrid[1][0].used = true;
+	testGrid[1][1].used = true;
+	testGrid[1][2].used = true;
+	testGrid[1][3].used = true;
+	// level 2
+	testGrid[2][2].used = true;
+	testGrid[2][3].used = true;
+	testGrid[2][6].used = true;
+	testGrid[2][7].used = true;	
+	testGrid[2][8].used = true;
+	testGrid[2][9].used = true;
+	testGrid[2][12].used = true;
+	testGrid[2][13].used = true;
+	// level 3	
+	testGrid[3][4].used = true;
+	testGrid[3][5].used = true;
+	testGrid[3][12].used = true;
+	testGrid[3][13].used = true;
+	testGrid[3][20].used = true;
+	testGrid[3][21].used = true;
+	testGrid[3][28].used = true;
+	testGrid[3][29].used = true;
+
+	// actual tests
+
+	// deltas: {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+	// level 1
+	int d = 1;
+	std::pair<Cell*, Cell*> n;
+	// cell 0's neighbor to the right
+	int level = d;
+	n = getNeighborInDir(testGrid, d, 0, 0, 2, &level);
+	assert (assertNeighbors(&testGrid[1][1], NULL, n.first, n.second));
+	assert (level == 1);
+	// cell 1's neighbor to the left
+	level = d;
+	n = getNeighborInDir(testGrid, d, 0, 1, 3, &level);
+	assert (assertNeighbors(&testGrid[1][0], NULL, n.first, n.second));
+	assert (level == 1);
+
+	// level 2
+	d = 2;
+
+	level = d;
+	n = getNeighborInDir(testGrid, 1, 0, 0, 2, &level);
+	assert (assertNeighbors(&testGrid[2][2], &testGrid[2][6], n.first, n.second));
+	assert (level == 2);
+
+	level = d;
+	n = getNeighborInDir(testGrid, 2, 0, 2, 3, &level);
+	assert (assertNeighbors(&testGrid[1][0], NULL, n.first, n.second));
+	assert (level == 1);
+
+	// level 3
+	d = 3;
+
+	level = d;
+	n = getNeighborInDir(testGrid, 1, 0, 0, 2, &level);
+	assert (assertNeighbors(&testGrid[3][12], &testGrid[3][20], n.first, n.second));
+	assert (level == 3);
+
+	level = d;
+	n = getNeighborInDir(testGrid, 1, 0, 0, 0, &level);
+	assert (assertNeighbors(&testGrid[2][8], &testGrid[2][9], n.first, n.second));
+	assert (level == 2);
+
+	level = d;
+	n = getNeighborInDir(testGrid, 1, 1, 1, 1, &level);
+	assert (assertNeighbors(&testGrid[3][29], NULL, n.first, n.second));
+	assert (level == 3);
+
+	// clean up
+	printf("done testing multilevel neighbors");
+	for (int i = 0; i < 4; i++) {
+		delete testGrid[i];
+	}
+	delete testGrid;
 }
 
 std::pair<double, double> getGradient(double vals[], int sizes[], int size) {
@@ -760,8 +904,8 @@ int main(int argc, char** argv) {
 
 	initSim();
 
-	// test determinant
-	//testDeterminant();
+	// test neighbors
+	// testMultilevelNeighbors();
 
 	// TODO don't do if headless
 	glutInitWindowSize(windowWidth, windowHeight);   // Set the window's initial width & height
