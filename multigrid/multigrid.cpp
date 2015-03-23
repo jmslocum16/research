@@ -30,7 +30,7 @@ double dt = .02;
 // GRID[R][C] maps to first quadrant by R->Y, C->X!!
 
 struct Cell {
-	double p, vx, vy, dp, R, phi; // pressure ,x velocity, y velocity, pressure correction, residual, level set value
+	double p, vx, vy, dp, R, phi, divV; // pressure ,x velocity, y velocity, pressure correction, residual, level set value
 	bool used;
 };
 
@@ -162,18 +162,20 @@ double deltas[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
 double corner1[4][2] = {{0, 0}, {1, 0}, {0, 0}, {0, 1}};
 double corner2[4][2] = {{0, 1}, {1, 1}, {1, 0}, {1, 1}};
 
+Cell* nullCell = NULL;
+
 // finds the highest level used neighbor at the given multilevel
 // returns 2  cells if on the same (higher) level, otherwise returns one and null
 // d is level, (i, j), k is the direction (deltas index). Value initially in level is the target level, value returned in level is the level of the neighboring cell
 // guaranteed d <= target level, otherwise that wouldn't make any sense..
-std::pair<Cell, Cell> getNeighborInDirAtLevel(int d, int i, int j, int k, const int& level) {
+std::pair<Cell*, Cell*> getNeighborInDir(int d, int i, int j, int k, int* level) {
 	int size = 1<<d;
 	int newi = i + deltas[k][0];
 	int newj = j + deltas[k][1];
 	if (newi < 0 || newi >= size || newj <0 || newj >= size) {
 		// not on grid, use boundary conditions
 		*level = d;
-		return std::make_pair(grid[d][i*size+j], NULL);
+		return std::make_pair(&grid[d][i*size+j], nullCell);
 	} else if (!grid[d][newi*size+newj].used) {
 		// go up until find the used cell
 		int newd = d;
@@ -183,11 +185,11 @@ std::pair<Cell, Cell> getNeighborInDirAtLevel(int d, int i, int j, int k, const 
 			newd -= 1;
 		}
 		*level = newd;
-		return std::make_pair(grid[newd][newi * (1<<newd) + newj], NULL);
+		return std::make_pair(&grid[newd][newi * (1<<newd) + newj], nullCell);
 	} else if (d == *level) {
 		// simply just your neighbor
-		level* = d;
-		return std::make_pair(grid[newd][newi * size + newj], NULL);
+		*level = d;
+		return std::make_pair(&grid[d][newi * size + newj], nullCell);
 	} else {
 		int c1i = 2*newi + corner1[k][0];
 		int c1j = 2*newj + corner1[k][1];
@@ -207,7 +209,7 @@ std::pair<Cell, Cell> getNeighborInDirAtLevel(int d, int i, int j, int k, const 
 		if (grid[cd][c1i * csize + c1j].used && grid[cd][c2i * csize + c2j].used) {
 			// terminated b/c at bottom level, just return both
 			*level = cd;
-			return std::make_pair(grid[cd][c1i * csize + c1j], grid[cd][c2i * csize + c2j]);
+			return std::make_pair(&grid[cd][c1i * csize + c1j], &grid[cd][c2i * csize + c2j]);
 		} else if (grid[cd][c1i * size + c1j].used) {
 			// terminated because c2 not used anymore. Keep following c1 to the end then return it.
 			while (cd < *level - 1 && grid[cd][c1i * csize + c1j].used) {
@@ -224,7 +226,7 @@ std::pair<Cell, Cell> getNeighborInDirAtLevel(int d, int i, int j, int k, const 
 				c1j >>= 1;
 			}
 			*level = cd;
-			return std::make_pair(grid[cd][c1i * csize + c1j], NULL);
+			return std::make_pair(&grid[cd][c1i * csize + c1j], nullCell);
 		} else if (grid[cd][c2i * csize + c2j].used) {
 			// terminated because c1 not used anymore. Keep following c2 to the end then return it.
 			while (cd < *level - 1 && grid[cd][c2i * csize + c2j].used) {
@@ -241,7 +243,7 @@ std::pair<Cell, Cell> getNeighborInDirAtLevel(int d, int i, int j, int k, const 
 				c2j >>= 1;
 			}
 			*level = cd;
-			return std::make_pair(grid[cd][c2i * csize + c2j], NULL);
+			return std::make_pair(&grid[cd][c2i * csize + c2j], nullCell);
 		} else {
 			// neither c1 nor c2 used, but both were on previous level, so back both up 1 level and return both
 			cd--;
@@ -251,27 +253,38 @@ std::pair<Cell, Cell> getNeighborInDirAtLevel(int d, int i, int j, int k, const 
 			c2i >>= 1;
 			c2j >>= 1;
 			*level = cd;
-			return std::make_pair(grid[cd][c1i * csize + c1j], grid[cd][c2i * csize + c2j]);
+			return std::make_pair(&grid[cd][c1i * csize + c1j], &grid[cd][c2i * csize + c2j]);
 		}
 	}
+}
+
+std::pair<double, double> getGradient(double vals[], int sizes[], int size) {
+	// grad = a - b / (dist) = (a - b) / ((1/sizea) / 2 + (1/sizeb) / 2 + 1/size) = (a - b) / (.5/sizea + .5/sizeb + size)
+	return std::make_pair((vals[2] - vals[3])/(0.5/sizes[2] + 0.5/sizes[3] + 1.0/size), (vals[0]-vals[1])/(0.5/sizes[0] + 0.5/sizes[1] + 1.0/size));	
 }
 
 std::pair<double, double> getPressureGradient(Cell** g, int d, int i, int j) {
 	int size = 1<<d;
 	double vals[4];	
+	int sizes[4];
+	double h;
 	for (int k = 0; k < 4; k++) {
-		int newi = i + deltas[k][0];
-		int newj = j + deltas[k][1];
-		if (newi < 0 || newi >= size || newj <0 || newj >= size) {
-			vals[k] = g[d][i*size+j].p;
+		int level = d;
+		std::pair<Cell*, Cell*> neighbor = getNeighborInDir(d, i, j, k, &level);
+		
+		if (neighbor.second == NULL) {
+			// only 1
+			vals[k] = neighbor.first->p;
 		} else {
-			vals[k] = g[d][newi*size+newj].p;
+			vals[k] = (neighbor.first->p + neighbor.second->p)/2.0;
 		}
+		sizes[k] = 1<<level;
 	}
-	return std::make_pair(size * (vals[2] - vals[3])/2, size * (vals[0]-vals[1])/2);
+	return getGradient(vals, sizes, size);
 }
 
-std::pair<double, double> getLevelSetGradient(Cell** g, int d, int i, int j) {
+// TODO
+/*std::pair<double, double> getLevelSetGradient(Cell** g, int d, int i, int j) {
 	int size = 1<<d;
 	double vals[4];
 	for (int k = 0; k < 4; k++) {
@@ -284,109 +297,37 @@ std::pair<double, double> getLevelSetGradient(Cell** g, int d, int i, int j) {
 		}
 	}
 	return std::make_pair(size * (vals[2] - vals[3])/2, size * (vals[0]-vals[1])/2);
-}
+}*/
 
-double determinant(double col1[], double col2[], double col3[]) {
-	//printf("determinant of:\n");
-	//printf("%f %f %f\n", col1[0], col2[0], col3[0]);
-	//printf("%f %f %f\n", col1[1], col2[1], col3[1]);
-	//printf("%f %f %f\n", col1[2], col2[2], col3[2]);
-	double first = col1[0] * (col2[1] * col3[2] - col2[2] * col3[1]);
-	double second = -col1[1] * (col2[0] * col3[2] - col2[2] * col3[0]);
-	double third = col1[2] * (col2[0] * col3[1] - col2[1] * col3[0]);
-	//printf("first: %f\n", first);
-	//printf("second: %f\n", second);
-	//printf("third: %f\n", third);
-	//printf("is: %f\n", first + second + third);
-	return first + second + third;
-}
 
-// gets derivative at middle point as if they are a parabola
-// solves system of equations for a, b, c
-/*
- * y1 = a * x1^2 + b * x1 + c
- * y2 = a * x2^2 + b * x2 + c
- * y3 = a * x3^2 + b * x3 + c
- *
- * and derivative at x2 is 2 * a * x2 + b
- */
-double quadraticDerivative(double x1, double y1, double x2, double y2, double x3, double y3) {
-	double col1[3] = {x1*x1, x2*x2, x3*x3};
-	double col2[3] = {x1, x2, x3};
-	double col3[3] = {1, 1, 1};
-	double col4[3] = {y1, y2, y3};
-	
-	// cramer's rule
-	double D = determinant(col1, col2, col3);
-	double a = determinant(col4, col2, col3) / D;
-	double b = determinant(col1, col4, col3) / D;
-	// double c = determinant(col1, col2, col4) / D;
-	return 2 * a * x2 + b;
-}
-
-void testDeterminant() {
-	double col1[3] = {2, 1, 1};
-	double col2[3] = {1, -1, 2};
-	double col3[3] = {1, -1, 1};
-	double col4[3] = {3, 0, 0};
-	
-	double det0 = determinant(col1, col2, col3);
-	if (det0 != 3.0) {
-		printf("det0 is %f\n", det0);
-	}
-	double det1 = determinant(col4, col2, col3);
-	if (det1 != 3.0) {
-		printf("det1 is %f\n", det1);
-	}
-	double det2 = determinant(col1, col4, col3);
-	if (det2 != -6) {
-		printf("det2 is %f\n", det2);
-	}
-	double det3 = determinant(col1, col2, col4);
-	if (det3 != 9) {
-		printf("det3 is \n", det3);
-	}
-	printf("done testing determinant\n");
-}
-
-// returns better but slower approximation
-double getQuadraticVelocityDivergence(double vals[], Cell& center) {
-	double dx = quadraticDerivative(-1, vals[2], 0, center.vx, 1, vals[3]);
-	double dy = quadraticDerivative(-1, vals[0], 0, center.vy, 1, vals[1]);
-	return dx + dy;
-}
-
-// returns shitty approximation
-double getLinearVelocityDivergence(double vals[], int size) {
-	//double dx = (vals[2] - vals[3]) / (size + sizes[2]/2.0 + sizes[3]/2.0);
-	//double dy = (vals[0] - vals[1]) / (size + sizes[0]/2.0 + sizes[1]/2.0);
-	double dx = (vals[2] - vals[3]) / (2.0/size);
-	double dy = (vals[0] - vals[1]) / (2.0/size);
-	return dx + dy;
-}
-
-double getVelocityDivergence(Cell** g, int d, int i, int j) {
-	int size = 1<<d;
+void computeVelocityDivergence(Cell** g) {
 	double vals[4];	
-	for (int k = 0; k < 4; k++) {
-		int newi = i + deltas[k][0];
-		int newj = j + deltas[k][1];
-		if (newi < 0 || newi >= size || newj <0 || newj >= size) {
-			vals[k] = (k < 2) ? g[d][i*size+j].vy : g[d][i*size+j].vx;
-			continue;
+	int sizes[4];
+	for (int d = 0; d < levels; d++) {
+		int size = 1<<d;
+		for (int i = 0; i < size; i++) {
+			for (int j = 0; j < size; j++) {
+
+				for (int k = 0; k < 4; k++) {
+					int level = d;
+					std::pair<Cell*, Cell*> neighbor = getNeighborInDir(d, i, j, k, &level);
+					if (neighbor.second == NULL) {
+						vals[k] = (k < 2) ? neighbor.first->vy : neighbor.first->vx;
+					} else {
+						if (k < 2) {
+							vals[k] = (neighbor.first->vy + neighbor.second->vy) / 2.0;
+						} else {
+							vals[k] = (neighbor.first->vx + neighbor.second->vx) / 2.0;
+						}
+					}	
+					sizes[k] = 1<<level;
+				}
+				
+				std::pair<double, double> grad = getGradient(vals, sizes, size);
+				g[d][i*size+j].divV = grad.first + grad.second;
+			}
 		}
-		Cell c = g[d][newi*size+newj];
-		vals[k] = (k < 2) ? c.vy : c.vx;
 	}
-
-
-	double lin = getLinearVelocityDivergence(vals, size);
-	double quad = getQuadraticVelocityDivergence(vals, g[d][i*size+j]);
-	//printf("velocity divergence of grid[%d][%d]: linear: %f, quadratic: %f\n", i,j, lin, quad);
-
-	//printf ("divV for [%d][%d][%d]: vals: %f, %f, %f, %f, divV: %f\n", d, i, j, vals[0], vals[1], vals[2], vals[3], lin);
-	return lin;
-	//return quad;
 }
 
 void computeResidual(int d) {
@@ -397,24 +338,26 @@ void computeResidual(int d) {
 	doneVCycle = true;
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
-			if (d == levels - 1) {
+			if (!grid[d][i*size+j].used) {
+				continue;
+			} else if (d == levels - 1 || !grid[d+1][4*i*size + 2*j].used) { // if leaf cell, compute residual
 				// compute it: R = div(vx, vy) - 1/(ha)*sum of (s * grad) for each face
 				double faceGradSum = 0.0;
 				for (int k = 0; k < 4; k++) {
-					int newi = i + deltas[k][0];
-					int newj = j + deltas[k][1];
-					if (newi < 0 || newi >= size || newj <0 || newj >= size) continue; // 0 face gradient at boundary condition
+					int level = levels - 1; // residual is computed at largest multilevel only.
+					std::pair<Cell*, Cell*> neighbor = getNeighborInDir(d, i, j, k, &level);
+					double neighborp = (neighbor.second == NULL) ? neighbor.first->p : (neighbor.first->p + neighbor.second->p) / 2.0;
+					int neighborsize = 1 << level;
 					// integral around the edge of flux, or side length * face gradient
-					//faceGradSum += 1 * (grid[newi*size+newj].p - grid[i*size+j].p)/ (1.0/size); // s is always 1
-					faceGradSum += size * (grid[d][newi*size+newj].p - grid[d][i*size+j].p);
+					//faceGradSum += 1 * (neighbor.p - this.p)/ (0.5/size + 0.5/neighborsize);
+					faceGradSum += (neighborp - grid[d][i*size+j].p) / (0.5/size + 0.5/neighborsize);
 				}
 				// h = length of cell = 1.0/size
 				// a = "fluid volume fraction of the cell". Since no boundaries cutting through cell, always 1
 				
-				double divV = getVelocityDivergence(grid, d, i, j);
 				// double flux = 1/ha * faceGradSum = 1/(1/size * 1) * faceGradSum = size * faceGradSum;
 				double flux = size * faceGradSum;
-				double R = divV - flux;
+				double R = grid[d][i*size+j].divV - flux;
 				
 				grid[d][i*size+j].R = R;
 				//printf("at [%d][%d], divV: %f, flux: %f, R: %f\n", i, j, divV, flux, R);
@@ -557,6 +500,10 @@ void runStep() {
 		}
 	}
 	std::swap(grid, oldGrid);
+
+
+	// compute velocity divergence for advection calculation
+	computeVelocityDivergence(oldGrid);
 	
 	// advect velocity, copy old stuff
 	//printf("advecting velocity\n");
@@ -575,9 +522,9 @@ void runStep() {
 				if (!grid[d][index].used) continue;
 				
 				// U** = Un - An*dt, An = div(V) * V
-				double divV = getVelocityDivergence(oldGrid, d, i, j);
-				double advectX = divV * grid[d][index].vx;
-				double advectY = divV * grid[d][index].vy;
+				
+				double advectX = oldGrid[d][index].divV * grid[d][index].vx;
+				double advectY = oldGrid[d][index].divV * grid[d][index].vy;
 				//printf("advecting grid[%d][%d][%d] by (%f, %f)\n", k, i, j, advectX, advectY);
 				//printf("pressure at [%d][%d][%d]: %f\n", k, i, j, grid[k][i*size+j].p);
 	
@@ -594,6 +541,8 @@ void runStep() {
 		}
 	}
 	// grid's vx and vy are now provisional velocity
+	// compute velocity divergence of new grid to use in residual calcuation
+	computeVelocityDivergence(grid);
 
 	computeResidual(levels - 1);
 
@@ -670,7 +619,7 @@ void runStep() {
 	printf("advecting phi\n");
 	// dphi/dt + v dot grad(phi) = 0
 	// dphi/dt = -v dot grad(phi)
-	size = 1 << (levels - 1);
+	/*size = 1 << (levels - 1);
 	double dphi[size*size];
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
@@ -679,7 +628,7 @@ void runStep() {
 			//dphi[i*size+j] = -dt * (grad.first * grid[i*size+j].vx + grad.second * grid[i*size+j].vy);
 			dphi[i*size+j] = dt * (-grad.first * grid[levels - 1][i*size+j].vx - grad.second * grid[levels-1][i*size+j].vy);
 		}
-	}
+	}*/
 	/*for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
 			grid[i * size + j].phi += dphi[i*size+j];
