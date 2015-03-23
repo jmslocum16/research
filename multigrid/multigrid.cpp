@@ -1,6 +1,7 @@
 #include <GL/glut.h>  // GLUT, include glu.h and gl.h
 #include <bitmap.h>
 
+#include <assert.h>
 #include <algorithm>
 #include <cmath>
 #include <ctime>
@@ -30,7 +31,7 @@ double dt = .02;
 // GRID[R][C] maps to first quadrant by R->Y, C->X!!
 
 struct Cell {
-	double p, vx, vy, dp, R, phi, divV; // pressure ,x velocity, y velocity, pressure correction, residual, level set value
+	double p, vx, vy, dp, R, phi, divV, temp; // pressure ,x velocity, y velocity, pressure correction, residual, level set value
 	bool used;
 };
 
@@ -168,28 +169,29 @@ Cell* nullCell = NULL;
 // returns 2  cells if on the same (higher) level, otherwise returns one and null
 // d is level, (i, j), k is the direction (deltas index). Value initially in level is the target level, value returned in level is the level of the neighboring cell
 // guaranteed d <= target level, otherwise that wouldn't make any sense..
-std::pair<Cell*, Cell*> getNeighborInDir(int d, int i, int j, int k, int* level) {
+std::pair<Cell*, Cell*> getNeighborInDir(Cell** g, int d, int i, int j, int k, int* level) {
 	int size = 1<<d;
+	assert (d <= *level);
 	int newi = i + deltas[k][0];
 	int newj = j + deltas[k][1];
 	if (newi < 0 || newi >= size || newj <0 || newj >= size) {
 		// not on grid, use boundary conditions
 		*level = d;
-		return std::make_pair(&grid[d][i*size+j], nullCell);
-	} else if (!grid[d][newi*size+newj].used) {
+		return std::make_pair(&g[d][i*size+j], nullCell);
+	} else if (!g[d][newi*size+newj].used) {
 		// go up until find the used cell
 		int newd = d;
-		while (!grid[newd][newi * (1<<newd) + newj].used) {
+		while (!g[newd][newi * (1<<newd) + newj].used) {
 			newi >>= 1;
 			newj >>= 1;
 			newd -= 1;
 		}
 		*level = newd;
-		return std::make_pair(&grid[newd][newi * (1<<newd) + newj], nullCell);
+		return std::make_pair(&g[newd][newi * (1<<newd) + newj], nullCell);
 	} else if (d == *level) {
 		// simply just your neighbor
 		*level = d;
-		return std::make_pair(&grid[d][newi * size + newj], nullCell);
+		return std::make_pair(&g[d][newi * size + newj], nullCell);
 	} else {
 		int c1i = 2*newi + corner1[k][0];
 		int c1j = 2*newj + corner1[k][1];
@@ -198,7 +200,7 @@ std::pair<Cell*, Cell*> getNeighborInDir(int d, int i, int j, int k, int* level)
 		int c2j = 2*newj + corner2[k][1];
 		int cd = d + 1;
 		int csize = 1<<cd;
-		while (cd < *level - 1 && grid[cd][c1i * csize + c1j].used && grid[cd][c2i * csize + c2j].used) {
+		while (cd < *level - 1 && g[cd][c1i * csize + c1j].used && g[cd][c2i * csize + c2j].used) {
 			cd++;
 			csize <<= 1;
 			c1i = 2*c1i + corner2[k][0];
@@ -206,19 +208,19 @@ std::pair<Cell*, Cell*> getNeighborInDir(int d, int i, int j, int k, int* level)
 			c2i = 2*c2i + corner1[k][0];
 			c2j = 2*c2j + corner1[k][1];
 		}
-		if (grid[cd][c1i * csize + c1j].used && grid[cd][c2i * csize + c2j].used) {
+		if (g[cd][c1i * csize + c1j].used && g[cd][c2i * csize + c2j].used) {
 			// terminated b/c at bottom level, just return both
 			*level = cd;
-			return std::make_pair(&grid[cd][c1i * csize + c1j], &grid[cd][c2i * csize + c2j]);
-		} else if (grid[cd][c1i * size + c1j].used) {
+			return std::make_pair(&g[cd][c1i * csize + c1j], &g[cd][c2i * csize + c2j]);
+		} else if (g[cd][c1i * size + c1j].used) {
 			// terminated because c2 not used anymore. Keep following c1 to the end then return it.
-			while (cd < *level - 1 && grid[cd][c1i * csize + c1j].used) {
+			while (cd < *level - 1 && g[cd][c1i * csize + c1j].used) {
 				cd++;
 				csize <<= 1;
 				c1i = 2*c1i + corner2[k][0];
 				c1j = 2*c1j + corner2[k][1];
 			}
-			if (!grid[cd][c1i*csize + c1j].used) {
+			if (!g[cd][c1i*csize + c1j].used) {
 				// went one level too far, back it up
 				cd--;
 				csize >>= 1;
@@ -226,16 +228,16 @@ std::pair<Cell*, Cell*> getNeighborInDir(int d, int i, int j, int k, int* level)
 				c1j >>= 1;
 			}
 			*level = cd;
-			return std::make_pair(&grid[cd][c1i * csize + c1j], nullCell);
-		} else if (grid[cd][c2i * csize + c2j].used) {
+			return std::make_pair(&g[cd][c1i * csize + c1j], nullCell);
+		} else if (g[cd][c2i * csize + c2j].used) {
 			// terminated because c1 not used anymore. Keep following c2 to the end then return it.
-			while (cd < *level - 1 && grid[cd][c2i * csize + c2j].used) {
+			while (cd < *level - 1 && g[cd][c2i * csize + c2j].used) {
 				cd++;
 				csize <<= 1;
 				c2i = 2*c2i + corner1[k][0];
 				c2j = 2*c2j + corner1[k][1];
 			}
-			if (!grid[cd][c2i*csize + c2j].used) {
+			if (!g[cd][c2i*csize + c2j].used) {
 				// went one level too far, back it up
 				cd--;
 				csize >>= 1;
@@ -243,7 +245,7 @@ std::pair<Cell*, Cell*> getNeighborInDir(int d, int i, int j, int k, int* level)
 				c2j >>= 1;
 			}
 			*level = cd;
-			return std::make_pair(&grid[cd][c2i * csize + c2j], nullCell);
+			return std::make_pair(&g[cd][c2i * csize + c2j], nullCell);
 		} else {
 			// neither c1 nor c2 used, but both were on previous level, so back both up 1 level and return both
 			cd--;
@@ -253,7 +255,7 @@ std::pair<Cell*, Cell*> getNeighborInDir(int d, int i, int j, int k, int* level)
 			c2i >>= 1;
 			c2j >>= 1;
 			*level = cd;
-			return std::make_pair(&grid[cd][c1i * csize + c1j], &grid[cd][c2i * csize + c2j]);
+			return std::make_pair(&g[cd][c1i * csize + c1j], &g[cd][c2i * csize + c2j]);
 		}
 	}
 }
@@ -270,7 +272,7 @@ std::pair<double, double> getPressureGradient(Cell** g, int d, int i, int j) {
 	double h;
 	for (int k = 0; k < 4; k++) {
 		int level = d;
-		std::pair<Cell*, Cell*> neighbor = getNeighborInDir(d, i, j, k, &level);
+		std::pair<Cell*, Cell*> neighbor = getNeighborInDir(grid, d, i, j, k, &level);
 		
 		if (neighbor.second == NULL) {
 			// only 1
@@ -310,7 +312,7 @@ void computeVelocityDivergence(Cell** g) {
 
 				for (int k = 0; k < 4; k++) {
 					int level = d;
-					std::pair<Cell*, Cell*> neighbor = getNeighborInDir(d, i, j, k, &level);
+					std::pair<Cell*, Cell*> neighbor = getNeighborInDir(g, d, i, j, k, &level);
 					if (neighbor.second == NULL) {
 						vals[k] = (k < 2) ? neighbor.first->vy : neighbor.first->vx;
 					} else {
@@ -345,7 +347,7 @@ void computeResidual(int d) {
 				double faceGradSum = 0.0;
 				for (int k = 0; k < 4; k++) {
 					int level = levels - 1; // residual is computed at largest multilevel only.
-					std::pair<Cell*, Cell*> neighbor = getNeighborInDir(d, i, j, k, &level);
+					std::pair<Cell*, Cell*> neighbor = getNeighborInDir(grid, d, i, j, k, &level);
 					double neighborp = (neighbor.second == NULL) ? neighbor.first->p : (neighbor.first->p + neighbor.second->p) / 2.0;
 					int neighborsize = 1 << level;
 					// integral around the edge of flux, or side length * face gradient
@@ -383,108 +385,86 @@ void computeResidual(int d) {
 	printf("done residual\n");
 }
 
-void relaxJacobi(int d, int r) {
-	bool done = false;
-	int cycles = 0;
-	int size = 1<<d;
-	double newdp[size*size];
-	while (/*r-- > 0 && */!done) {
-		cycles++;
-		done = true;
-		// Relax(dp, R): dp <-- (sum of adjacent dp - h^2*R)/4
-		for (int i = 0; i < size; i++) {
-			for (int j = 0; j < size; j++) {
-				double pSum = 0.0;
-				double oldDif = grid[d][i*size+j].dp;
-				for (int k = 0; k < 4; k++) {
-					int newi = i + deltas[k][0];
-					int newj = j + deltas[k][1];
-					if (newi < 0 || newi >= size || newj <0 || newj >= size) {
-						pSum += grid[d][i*size+j].dp; // if off, use this pressure
-						continue;
-					}
-					pSum += grid[d][newi*size+newj].dp;
-				}
-				
-				newdp[i*size+j] = (pSum - ( (grid[d][i*size+j].R)/(size*size) ) )/4.0;
-				double diff = oldDif - newdp[i*size+j];
-				if (fabs(diff) > eps) {
-					done = false;
-					//printf("relaxing[%d][%d]: pSum: %f, R: %f, result: %f, diff from old: %f\n", i, j, pSum, grid[d][i*size+j].R, newdp[i*size+j], diff);
-					//printf("get out\n");
-				}
-			}
-		}
-		//printf("dp matrix with %d cycles left: \n", r);
-		for (int i = 0; i < size; i++) {
-			for (int j = 0; j < size; j++) {
-				grid[d][i*size+j].dp = newdp[i*size+j];
-				//printf(" %.3f", newdp[i*size+j]);
-			}
-			//printf("\n");
-		}
-	}
-	//printf("relaxing took %d cycles\n", cycles);
-}
 
-void relaxGaussSiedel(int d, int r) {
-	bool done = false;
+// relax the cell at [d][i][j] at the given multilevel
+// puts the new value of dp in temp
+bool relaxRecursive(int d, int i, int j, int ml) {
+	// d should never be > ml
+	assert (d <= ml);
 	int size = 1<<d;
-	int cycles = 0;
-	while (r-- > 0 && !done /*!done*/) {
-		cycles++;
-		done = true;
-		// Relax(dp, R): dp <-- (sum of adjacent dp - h^2*R)/4
-		for (int i = 0; i < size; i++) {
-			for (int j = 0; j < size; j++) {
-				double pSum = 0.0;
-				double oldDif = grid[d][i*size+j].dp;
-				for (int k = 0; k < 4; k++) {
-					int newi = i + deltas[k][0];
-					int newj = j + deltas[k][1];
-					if (newi < 0 || newi >= size || newj <0 || newj >= size) {
-						pSum += grid[d][i*size+j].dp; // if off, use this pressure
-						continue;
-					}
-					pSum += grid[d][newi*size+newj].dp;
-				}
-				
-				grid[d][i*size+j].dp = (pSum - ( (grid[d][i*size+j].R)/(size*size) ) )/4.0;
-				double diff = oldDif - grid[d][i*size+j].dp;
-				if (fabs(diff) > eps) {
-					done = false;
-					printf("relaxing[%d][%d]: pSum: %f, R: %f, result: %f, diff from old: %f\n", i, j, pSum, grid[d][i*size+j].R, grid[d][i*size+j].dp, diff);
-					//printf("get out\n");
-				}
+	if (!grid[d][i*size+j].used) {
+		return true;
+	} else if (d == ml || (d < ml && !grid[d+1][4*i*size+2*j].used)) {
+		// relax level
+		double pSum = 0.0;
+		double oldDif = grid[d][i*size+j].dp;
+		for (int k = 0; k < 4; k++) {
+			int level = ml;
+			std::pair<Cell*, Cell*> neighbor = getNeighborInDir(grid, d, i, j, k, &level);
+			if (neighbor.second == NULL) {
+				pSum += neighbor.first->dp;
+			} else {
+				pSum += (neighbor.first->dp + neighbor.second->dp)/2.0;
 			}
 		}
+		
+		grid[d][i*size+j].temp = (pSum - ( (grid[d][i*size+j].R)/(size*size) ) )/4.0;
+		double diff = oldDif - grid[d][i*size+j].temp;
+		if (fabs(diff) > eps) {
+			return false;
+			//printf("relaxing[%d][%d]: pSum: %f, R: %f, result: %f, diff from old: %f\n", i, j, pSum, grid[d][i*size+j].R, newdp[i*size+j], diff);
+			//printf("get out\n");
+		}
+		return true;
+	} else {
+		// relax children
+		bool done = true;
+		for (int k = 0; k < 4; k++) {
+			done &= relaxRecursive(d + 1, 2*i + (k/2), 2*j + (k%2), ml);
+		}
+		return done;
 	}
-	//printf("relaxing took %d cycles\n", cycles);
 }
 
 void relax(int d, int r) {
 	int size = 1<<d;
+	assert (d < levels);
 
 	printf("relaxing level %d\n", d);
-	// get initial gress from next level, if possible
+	// get initial gress from previous level, if possible
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
-			if (d == 0) {
+			if (!grid[d][i*size+j].used) {
+				continue; // not part of its multilevel, higher cell already has guess
+			} else if (d == 0) {
 				grid[d][i*size+j].dp = 0; // TODO what is better initial guess?
 			} else {
 				// inject from higher level
 				grid[d][i*size+j].dp = grid[d-1][i/2 * size/2 + j/2].dp;
 				// printf("initial guess for [%d][%d].dp is %f\n", i, j, grid[d][i*size+j].dp);
 			}
-			printf(" %.3f", grid[d][i*size+j].dp);
+			//printf(" %.3f", grid[d][i*size+j].dp);
 			//printf(" %.3f", grid[i*size+j].R);
 		}
-		printf("\n");
+		//printf("\n");
 	}
-	
+	bool done = false;
+	int maxlevel = d;
+	while (r-- > 0 && !done) {
+		done = relaxRecursive(0, 0, 0, maxlevel);
+		for (d = 0; d <= maxlevel; d++) {
+			size = 1<<d;
+			for (int i = 0; i < size; i++) {
+				for (int j = 0; j < size; j++) {
+					if (grid[d][i*size+j].used) {
+						grid[d][i*size+j].dp = grid[d][i*size+j].temp;
+					}
+				}
+			}
+		}
+	}
+	//printf("dp matrix with %d cycles left: \n", r);
 
-	relaxJacobi(d, r);
-	//relaxGaussSiedel(d, r);
 }
 
 void runStep() {
