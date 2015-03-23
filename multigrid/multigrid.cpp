@@ -23,6 +23,7 @@ int levels;
 int levelToDisplay; // level to draw
 bool water;
 bool drawVelocity;
+bool drawCells;
 bool screenshot;
 int frameNumber = 0;
 
@@ -44,7 +45,7 @@ int MAX_RELAX_COUNT = 20;
 int OPTIMIZED_RELAX_COUNT = 4;
 
 
-double eps = .0001;
+double eps = .001;
 
 void saveScreen() {
 	unsigned char * imageBuffer = new unsigned char[3 * windowWidth * windowHeight];
@@ -77,14 +78,13 @@ void drawMultilevel(int d, int i, int j, int ml) {
 		return;
 	} else if (d == ml || !grid[d+1][4*i*size+2*j].used) {
 		// draw it
+		double x = -1.0 + (2.0 * j) / size;
+		double y = -1.0 + (2.0 * i) / size;
+
 		if (water) {
 			if (grid[d][i*size+j].phi >= 0) {
 				double val = fmin(1.0, grid[d][i*size+j].phi);
 				glColor3f(0.0, 0.0, val);
-				
-				double x = -1.0 + (2.0 * j) / size;
-				double y = -1.0 + (2.0 * i) / size;
-				glRectf(x, y, x + 2.0/size, y + 2.0/size);
 			}
 		} else {
 			double redPercent = 0.0;
@@ -98,11 +98,10 @@ void drawMultilevel(int d, int i, int j, int ml) {
 			
 			//printf("percent: %lf\n", percent);
 			glColor3f(redPercent, 0, bluePercent);
-			double x = -1.0 + (2.0 * j) / size;
-			double y = -1.0 + (2.0 * i) / size;
-			//double y = 1.0 - (2.0 * i) / size; 
-			glRectf(x, y, x + 2.0/size, y + 2.0/size);
 		}
+
+		glRectf(x, y, x + 2.0/size, y + 2.0/size);
+
 		if (drawVelocity && d <= 5) { // if size is > 40 this is pretty useless
 			if (maxMag >= eps) {
 				glColor3f(0.0, 1.0, 0.0);
@@ -120,6 +119,16 @@ void drawMultilevel(int d, int i, int j, int ml) {
 					glEnd();
 				}
 			}
+		}
+		// draw cell
+		if (drawCells && d <= 5) {
+			glColor3f(1.0, 1.0, 1.0);
+			glBegin(GL_LINE_LOOP);
+			glVertex2f(x, y);
+			glVertex2f(x, y + 2.0/size);
+			glVertex2f(x + 2.0/size, y+2.0/size);
+			glVertex2f(x + 2.0/size, y);
+			glEnd();
 		}
 	} else {
 		// draw children
@@ -458,7 +467,7 @@ void computeVelocityDivergence(Cell** g) {
 					int level = d;
 					std::pair<Cell*, Cell*> neighbor = getNeighborInDir(g, d, i, j, k, &level);
 					if (neighbor.second == NULL) {
-						vals[k] = (k < 2) ? neighbor.first->vy : neighbor.first->vx;
+					vals[k] = (k < 2) ? neighbor.first->vy : neighbor.first->vx;
 					} else {
 						if (k < 2) {
 							vals[k] = (neighbor.first->vy + neighbor.second->vy) / 2.0;
@@ -481,10 +490,10 @@ void computeResidual(int d) {
 
 	int size = 1<<d;
 	
-	doneVCycle = true;
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
 			if (!grid[d][i*size+j].used) {
+				//printf("       ");
 				continue;
 			} else if (d == levels - 1 || !grid[d+1][4*i*size + 2*j].used) { // if leaf cell, compute residual
 				// compute it: R = div(vx, vy) - 1/(ha)*sum of (s * grad) for each face
@@ -507,6 +516,13 @@ void computeResidual(int d) {
 				
 				grid[d][i*size+j].R = R;
 				//printf("at [%d][%d], divV: %f, flux: %f, R: %f\n", i, j, divV, flux, R);
+				// if a*R > e, not done
+				if (fabs(R) > eps) {
+					doneVCycle = false;
+					//printf("more work to do at [%d][%d], %f is bigger than epsilon of %f\n", i, j, grid[d][i*size+j].R, eps);
+				} else {
+					//printf("done with this cell already, %f is smaller than epsilon of %f\n", fabs(grid[d][i*size+j].R), eps);
+				}
 			} else {
 				for (int k = 0; k < 4; k++) {
 					grid[d][i*size+j].R += grid[d+1][(2*i+k/2)*2*size+2*j+(k%2)].R;
@@ -514,16 +530,9 @@ void computeResidual(int d) {
 				grid[d][i*size+j].R /= 4.0;
 			}
 
-			// if a*R > e, not done
-			if (fabs(grid[d][i*size+j].R) > eps) {
-				doneVCycle = false;
-				//printf("more work to do at [%d][%d], %f is bigger than epsilon of %f\n", i, j, grid[d][i*size+j].R, eps);
-			} else {
-				//printf("done with this cell already, %f is smaller than epsilon of %f\n", fabs(grid[d][i*size+j].R), eps);
-			}
-			printf(" %.3f", grid[d][i*size+j].R);
+			//printf(" %.4f", grid[d][i*size+j].R);
 		}
-		printf("\n");
+		//printf("\n");
 	}
 	
 	printf("done residual\n");
@@ -668,7 +677,12 @@ void runStep() {
 	// compute velocity divergence of new grid to use in residual calcuation
 	computeVelocityDivergence(grid);
 
+	// compute all residuals, so that the whole bottom multilevel is computed
+	doneVCycle = true;
 	computeResidual(levels - 1);
+	for (int d = levels - 2; d >= 0; d--) {
+			computeResidual(d);
+	}
 
 	int numCycles = 0;
 	
@@ -676,10 +690,7 @@ void runStep() {
 		numCycles++;
 		//printf("start v cycle %d\n", numCycles);
 
-		for (int d = levels - 2; d >= 0; d--) {
-			computeResidual(d);
-		}
-
+		
 		//relax(0, MAX_RELAX_COUNT);
 		grid[0][0].dp = 0;
 		// Trying to not relax level 0 since it makes no sense to do so...
@@ -711,7 +722,11 @@ void runStep() {
 
 		
 		// re-compute residual
+		doneVCycle = true;
 		computeResidual(levels - 1);
+		for (int d = levels - 2; d >= 0; d--) {
+			computeResidual(d);
+		}
 
 		// TODO REMOVE
 		// doneVCycle = true;
@@ -838,6 +853,18 @@ void initSim() {
 			printf("\n");
 		}
 	}
+
+	// MAKE MULTILEVEL
+	int newd = levels - 2;
+	int newsize = 1<<newd;
+	int R = 0;
+	int C = newsize/2;
+	for (int k = 0; k < 4; k++) {
+		int newR = R*2 + (k/2);
+		int newC = C*2 + (k%2);
+		grid[newd + 1][newR*2*newsize+newC].used = false;
+	}
+
 	// clamp starting velocity
 	for (int d = 0; d < levels; d++) {
 		int size = 1<<d;
@@ -886,6 +913,7 @@ int main(int argc, char** argv) {
 	headless = false;
 	levels = 4;
 	water = false;
+	drawCells = false;
 	screenshot = false;
 	for (int i = 1; i < argc; i++) {
 		char* arg = argv[i];
@@ -900,6 +928,8 @@ int main(int argc, char** argv) {
 		} else if (!strcmp("--screenshot", arg)) {
 			screenshot = true;
 			statScreenshotDir();
+		} else if (!strcmp("--cells", arg)) {
+			drawCells = true;
 		}
 	}
 	levelToDisplay = levels - 1;
