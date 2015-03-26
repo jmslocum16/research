@@ -406,7 +406,7 @@ void testMultilevelNeighbors() {
 	assert (level == 3);
 
 	// clean up
-	printf("done testing multilevel neighbors");
+	printf("done testing multilevel neighbors\n");
 	for (int i = 0; i < 4; i++) {
 		delete testGrid[i];
 	}
@@ -809,6 +809,8 @@ void initSim() {
 			if (i == start && j == start) {
 				grid[level][i*size+j].p = 1.0;
 			}
+            grid[level][i*size+j].vx = 0.0;
+            grid[level][i*size+j].vy = 0.0;
 			//grid[i*size+j].vx = (sinkC - j)/(1.0*size);
 			//grid[i*size+j].vy = (sinkR - i)/(1.0*size);
 			if (i == start)
@@ -941,7 +943,7 @@ int main(int argc, char** argv) {
 	initSim();
 
 	// test neighbors
-	// testMultilevelNeighbors();
+	testMultilevelNeighbors();
 
 	// TODO don't do if headless
 	glutInitWindowSize(windowWidth, windowHeight);   // Set the window's initial width & height
