@@ -548,20 +548,27 @@ bool relaxRecursive(int d, int i, int j, int ml) {
 	if (!grid[d][i*size+j].used) {
 		return true;
 	} else if (d == ml || (d < ml && !grid[d+1][4*i*size+2*j].used)) {
-		// relax level
-		double pSum = 0.0;
+        // dp = (h*a*divV - bsum)/asum
+		double aSum = 0.0;
+        double bSum = 0.0;
+        double dp;
+        double h;
 		double oldDif = grid[d][i*size+j].dp;
 		for (int k = 0; k < 4; k++) {
 			int level = ml;
 			std::pair<Cell*, Cell*> neighbor = getNeighborInDir(grid, d, i, j, k, &level);
 			if (neighbor.second == NULL) {
-				pSum += neighbor.first->dp;
+				dp = neighbor.first->dp;
 			} else {
-				pSum += (neighbor.first->dp + neighbor.second->dp)/2.0;
+				dp = (neighbor.first->dp + neighbor.second->dp)/2.0;
 			}
+            h = 0.5 / size + 0.5 /(1<<level);
+            aSum -= 1/h;
+            bSum += dp/h;
 		}
 		
-		grid[d][i*size+j].temp = (pSum - ( (grid[d][i*size+j].R)/(size*size) ) )/4.0;
+        // dp = (h*R - bsum)/asum
+        grid[d][i*size+j].temp = (grid[d][i*size+j].R/size - bSum) / aSum;
 		double diff = oldDif - grid[d][i*size+j].temp;
 		if (fabs(diff) > eps) {
 			return false;
@@ -857,7 +864,7 @@ void initSim() {
 	}
 
 	// MAKE MULTILEVEL
-	int newd = levels - 2;
+	/*int newd = levels - 2;
 	int newsize = 1<<newd;
 	int R = 0;
 	int C = newsize/2;
@@ -865,7 +872,7 @@ void initSim() {
 		int newR = R*2 + (k/2);
 		int newC = C*2 + (k%2);
 		grid[newd + 1][newR*2*newsize+newC].used = false;
-	}
+	}*/
 
 	// clamp starting velocity
 	for (int d = 0; d < levels; d++) {
