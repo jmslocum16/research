@@ -516,7 +516,7 @@ void computeResidual(int d) {
 				double R = grid[d][i*size+j].divV - flux;
 				
 				grid[d][i*size+j].R = R;
-				//printf("at [%d][%d], divV: %f, flux: %f, R: %f\n", i, j, divV, flux, R);
+				//printf("at [%d][%d], divV: %f, flux: %f, R: %f\n", i, j, grid[d][i*size+j].divV, flux, R);
 				// if a*R > e, not done
 				if (fabs(R) > eps) {
 					doneVCycle = false;
@@ -612,7 +612,9 @@ void relax(int d, int r) {
 	}
 	bool done = false;
 	int maxlevel = d;
+    int totalCycles = 0;
 	while (/*r-- > 0 && */!done) {
+        totalCycles++;
 		done = relaxRecursive(0, 0, 0, maxlevel);
 		for (d = 0; d <= maxlevel; d++) {
 			size = 1<<d;
@@ -620,12 +622,27 @@ void relax(int d, int r) {
 				for (int j = 0; j < size; j++) {
 					if (grid[d][i*size+j].used) {
 						grid[d][i*size+j].dp = grid[d][i*size+j].temp;
+                        //printf(" %.4f", grid[d][i*size+j].dp);
 					}
 				}
+                //printf("\n");
 			}
 		}
 	}
-	//printf("dp matrix with %d cycles left: \n", r);
+    printf("relaxed level %d\n", maxlevel);
+    for (d = 0; d <= maxlevel; d++) {
+        size = 1<<d;
+        printf("level %d\n", d);
+        for (int i = 0; i < size; i++) {
+            for (int j = 0; j < size; j++) {
+                if (grid[d][i*size+j].used) {
+                    printf(" %.4f", grid[d][i*size+j].dp);
+                }
+            }
+            printf("\n");
+        }
+    }
+    printf("number of cycles: %d\n", totalCycles);
 
 }
 
@@ -697,7 +714,18 @@ void runStep() {
 	
 	while (!doneVCycle) {
 		numCycles++;
-		//printf("start v cycle %d\n", numCycles);
+		printf("start v cycle %d\n", numCycles);
+        for (int d = 0; d < levels; d++) {
+            printf("level %d\n", d);
+    		int size = 1<<d;
+    		for (int i = 0; i < size; i++) {
+    			for (int j = 0; j < size; j++) {
+    				printf(" %.3f", grid[d][i*size+j].p);
+    			}
+    			printf("\n");
+    		}
+    	}
+
 
 		
 		//relax(0, MAX_RELAX_COUNT);
