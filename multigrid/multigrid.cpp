@@ -45,7 +45,6 @@ bool doneVCycle = false;
 int MAX_RELAX_COUNT = 20;
 int OPTIMIZED_RELAX_COUNT = 4;
 
-
 double eps = .0001;
 
 void saveScreen() {
@@ -463,6 +462,7 @@ void computeVelocityDivergence(Cell** g) {
 		int size = 1<<d;
 		for (int i = 0; i < size; i++) {
 			for (int j = 0; j < size; j++) {
+                if (!g[d][i*size+j].used) continue;
 
 				for (int k = 0; k < 4; k++) {
 					int level = d;
@@ -494,7 +494,7 @@ void computeResidual(int d) {
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
 			if (!grid[d][i*size+j].used) {
-				printf("       ");
+				//printf("       ");
 				continue;
 			} else if (d == levels - 1 || !grid[d+1][4*i*size + 2*j].used) { // if leaf cell, compute residual
 				// compute it: R = div(vx, vy) - 1/(ha)*sum of (s * grad) for each face
@@ -622,16 +622,15 @@ void relax(int d, int r) {
 				for (int j = 0; j < size; j++) {
 					if (grid[d][i*size+j].used) {
 						grid[d][i*size+j].dp = grid[d][i*size+j].temp;
-                        //printf(" %.4f", grid[d][i*size+j].dp);
 					}
 				}
-                //printf("\n");
 			}
 		}
 	}
-    printf("relaxed level %d\n", maxlevel);
+	//printf("dp matrix with %d cycles left: \n", r);
+    printf("relaxing took %d cycles\n", totalCycles);
     for (d = 0; d <= maxlevel; d++) {
-        size = 1<<d;
+        int size = 1<<d;
         printf("level %d\n", d);
         for (int i = 0; i < size; i++) {
             for (int j = 0; j < size; j++) {
@@ -642,7 +641,7 @@ void relax(int d, int r) {
             printf("\n");
         }
     }
-    printf("number of cycles: %d\n", totalCycles);
+
 
 }
 
@@ -714,18 +713,7 @@ void runStep() {
 	
 	while (!doneVCycle) {
 		numCycles++;
-		printf("start v cycle %d\n", numCycles);
-        for (int d = 0; d < levels; d++) {
-            printf("level %d\n", d);
-    		int size = 1<<d;
-    		for (int i = 0; i < size; i++) {
-    			for (int j = 0; j < size; j++) {
-    				printf(" %.3f", grid[d][i*size+j].p);
-    			}
-    			printf("\n");
-    		}
-    	}
-
+		//printf("start v cycle %d\n", numCycles);
 
 		
 		//relax(0, MAX_RELAX_COUNT);
@@ -834,11 +822,25 @@ void initSim() {
 		grid[d] = new Cell[size*size];
 		oldGrid[d] = new Cell[size*size];
 	}
+	int level = levels/2;
+	//int level = levels - 1;
 
-	int level = levels - 1;
+    for (int d = levels - 1; d > level; d--) {
+        int size = 1<<d;
+        for (int i = 0; i < size; i++) {
+            for (int j = 0; j < size; j++) {
+                grid[d][i*size+j].used = false;
+                grid[d][i*size+j].p = 0;
+                grid[d][i*size+j].vx = 0;
+                grid[d][i*size+j].vy = 0;
+                grid[d][i*size+j].phi = 0.0;
+            }
+        }
+    }
+
 	int size = 1<<level;
 	int start = size/2;
-	printf("deepest level\n");
+	printf("deepest level: %d\n", level);
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
 			//grid[i*size+j].p = i*size+j;
@@ -869,16 +871,16 @@ void initSim() {
 		printf("\n");
 	}
 
-	for (int d = levels - 2; d >= 0; d--) {
+	for (int d = level - 1; d >= 0; d--) {
 		printf("level %d\n", d);
 		int size = 1<<d;
 		for (int i = 0; i < size; i++) {
 			for (int j = 0; j < size; j++) {
-                grid[d][i*size+j].p = 0.0;
+	            grid[d][i*size+j].p = 0.0;
 				grid[d][i*size+j].vx = 0.0;
 				grid[d][i*size+j].vy = 0.0;
 				grid[d][i*size+j].phi = 0.0;
-
+                
 				for (int k = 0; k < 4; k++) {
 					grid[d][i*size+j].p += grid[d+1][(2*i+(k%2))*2*size + 2*j+k/2].p;
 					grid[d][i*size+j].vx += grid[d+1][(2*i+(k%2))*2*size + 2*j+k/2].vx;
@@ -955,7 +957,7 @@ void keyboard(unsigned char key, int x, int y) {
 int main(int argc, char** argv) {
 	glutInit(&argc, argv);          // Initialize GLUT
 	headless = false;
-	levels = 4;
+	levels = 6;
 	water = false;
 	drawCells = false;
 	screenshot = false;
@@ -978,7 +980,8 @@ int main(int argc, char** argv) {
             numToRun = atoi(argv[++i]);
         }
 	}
-	levelToDisplay = levels - 1;
+	levelToDisplay = levels/2;
+    //levelToDisplay = levels - 1;
 	printf("headless: %d, levels: %d\n", headless, levels);
 
 	// seed random
@@ -986,8 +989,7 @@ int main(int argc, char** argv) {
 
 	initSim();
 
-    printf("pre-running %d steps\n", numToRun
-    );
+    printf("pre-running %d steps.\n", numToRun);
     for (int i = 0; i < numToRun; i++) {
         runStep();
     }
