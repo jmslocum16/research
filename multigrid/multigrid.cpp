@@ -45,7 +45,7 @@ int MAX_RELAX_COUNT = 20;
 int OPTIMIZED_RELAX_COUNT = 4;
 
 
-double eps = .001;
+double eps = .0001;
 
 void saveScreen() {
 	unsigned char * imageBuffer = new unsigned char[3 * windowWidth * windowHeight];
@@ -694,7 +694,7 @@ void runStep() {
 
 	int numCycles = 0;
 	
-	while (!doneVCycle && numCycles < 100) {
+	while (!doneVCycle) {
 		numCycles++;
 		//printf("start v cycle %d\n", numCycles);
 
@@ -845,6 +845,11 @@ void initSim() {
 		int size = 1<<d;
 		for (int i = 0; i < size; i++) {
 			for (int j = 0; j < size; j++) {
+                grid[d][i*size+j].p = 0.0;
+				grid[d][i*size+j].vx = 0.0;
+				grid[d][i*size+j].vy = 0.0;
+				grid[d][i*size+j].phi = 0.0;
+
 				for (int k = 0; k < 4; k++) {
 					grid[d][i*size+j].p += grid[d+1][(2*i+(k%2))*2*size + 2*j+k/2].p;
 					grid[d][i*size+j].vx += grid[d+1][(2*i+(k%2))*2*size + 2*j+k/2].vx;
@@ -865,7 +870,7 @@ void initSim() {
 	}
 
 	// MAKE MULTILEVEL
-	int newd = levels - 2;
+	/*int newd = levels - 2;
 	int newsize = 1<<newd;
 	int R = 0;
 	int C = newsize/2;
@@ -873,7 +878,7 @@ void initSim() {
 		int newR = R*2 + (k/2);
 		int newC = C*2 + (k%2);
 		grid[newd + 1][newR*2*newsize+newC].used = false;
-	}
+	}*/
 
 	// clamp starting velocity
 	for (int d = 0; d < levels; d++) {
