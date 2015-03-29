@@ -641,8 +641,80 @@ void relax(int d, int r) {
             printf("\n");
         }
     }
+}
 
 
+void expand(int d, int i, int j) {
+    printf("expanding cell [%d][%d][%d]\n", d, i, j);
+    std::pair<double, double> pressureGrad = getPressureGradient(grid, d, i, j, levels - 1);
+    std::pair<double, double> velocityGrad = getVelocityGradient(grid, d, i, j);
+    int size = 1<<d;
+    Cell cur = grid[d][i*size+j];
+    // std::pair<double, double> levelSetGrad;
+    for (int k = 0; k < 4; k++) {
+        Cell child = grid[d+1][(2*i+(k/2))*2*size + 2*j + (k%2)];
+        child.used = true;
+        child.leaf = true;
+        int constX = k%2 == 0 ? -1 : 1;
+        int constY = k/2 == 0 ? -1 : 1;
+        child.p = cur.p + (constX * .25/size) * pressureGrad.first + (constY * .25/size) * pressureGrad.second;
+        child.vx = cur.vx + (constX * .25/size) * velocityGrad.first;
+        child.vy = cur.vy + (constY * .25/size) * velocityGrad.second;
+        // child.phi = ...
+    }
+    grid[d][i*size+j].used = true;
+}
+
+void contract(int d, int i, int j) {
+    printf("contracting cell [%d][%d][%d]\n", d, i, j);
+    int size = 1<<d;
+    for (int k = 0; k < 4; k++) {
+        Cell child = grid[d+1][(2*i+(k/2))*2*size + 2*j + (k%2)];
+        child.used = false;
+        child.leaf = false;
+    }
+    grid[d][i*size+j].leaf = true;
+}
+
+// returns true if leaf should be expanded, false if it should not
+
+double pressureThresh = .01;
+bool pGradAdaptFunction(int d, int i, int j) {
+    std::pair<double, double> pgrad = getPressureGradient(grid, d, i, j, levels - 1);
+    return fabs(pgrad.first + pgrad.second) < pressureThresh;
+}
+
+bool adaptFunction(int d, int i, int j) {
+    return pGradAdaptFunction(d, i, j);
+}
+
+void recursiveAdaptivity(int d, int i, int j) {
+    int size = 1<<d;
+    if (d == levels - 1 || !grid[d][i*size+j].used) return;
+    if (grid[d][i*size+j].leaf) {
+        // see if should adapt cell
+        if (adaptFunction(d, i, j)) {
+            expand(d, i, j);
+        }
+        return;
+    }
+    bool allChildrenLeaves = true;
+    for (int k = 0; k < 4; k++) {
+        if (!grid[d+1][(2*i+(k/2))*2*size + 2*j + (k%2)].leaf) {
+            allChildrenLeaves = false;
+            break;
+        }
+    }
+    if (allChildrenLeaves) {
+        if (!adaptFunction(d, i, j)) {
+            // this wouldn't be expanded if it was a leaf, so it shouldn't have leaf children
+            contract(d, i, j);
+        }
+    } else {
+        for (int k = 0; k < 4; k++) {
+            recursiveAdaptivity(d+1, i*2 + (k/2), j*2 + (k%2));
+        }
+    }
 }
 
 void runStep() {
@@ -698,6 +770,10 @@ void runStep() {
 			}
 		}
 	}
+	
+    // given new velocity field, do adaptivy
+    //recursiveAdaptivity(0, 0, 0);
+	
 	// grid's vx and vy are now provisional velocity
 	// compute velocity divergence of new grid to use in residual calcuation
 	computeVelocityDivergence(grid);
