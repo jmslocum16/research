@@ -34,7 +34,7 @@ double dt = .02;
 
 struct Cell {
 	double p, vx, vy, dp, R, phi, divV, temp; // pressure ,x velocity, y velocity, pressure correction, residual, level set value
-	bool used;
+	bool used, leaf;
 };
 
 struct Cell** grid;
@@ -76,7 +76,7 @@ void drawMultilevel(int d, int i, int j, int ml) {
 	int size = 1<<d;
 	if (!grid[d][i*size+j].used) {
 		return;
-	} else if (d == ml || !grid[d+1][4*i*size+2*j].used) {
+	} else if (d == ml || grid[d][i*size+j].leaf) {
 		// draw it
 		double x = -1.0 + (2.0 * j) / size;
 		double y = -1.0 + (2.0 * i) / size;
@@ -221,7 +221,7 @@ std::pair<Cell*, Cell*> getNeighborInDir(Cell** g, int d, int i, int j, int k, i
 		}
 		*level = newd;
 		return std::make_pair(&g[newd][newi * (1<<newd) + newj], nullCell);
-	} else if (d == *level) {
+	} else if (d == *level || g[d][newi*size+newj].leaf) {
 		// simply just your neighbor
 		*level = d;
 		return std::make_pair(&g[d][newi * size + newj], nullCell);
@@ -233,7 +233,7 @@ std::pair<Cell*, Cell*> getNeighborInDir(Cell** g, int d, int i, int j, int k, i
 		int c2j = 2*newj + corner2[k][1];
 		int cd = d + 1;
 		int csize = 1<<cd;
-		while (cd < *level && g[cd][c1i * csize + c1j].used && g[cd][c2i * csize + c2j].used) {
+		while (cd < *level && !g[cd][c1i * csize + c1j].leaf && !g[cd][c2i * csize + c2j].leaf) {
 			cd++;
 			csize <<= 1;
 			c1i = 2*c1i + corner2[k][0];
@@ -241,54 +241,32 @@ std::pair<Cell*, Cell*> getNeighborInDir(Cell** g, int d, int i, int j, int k, i
 			c2i = 2*c2i + corner1[k][0];
 			c2j = 2*c2j + corner1[k][1];
 		}
-		if (g[cd][c1i * csize + c1j].used && g[cd][c2i * csize + c2j].used) {
-			// terminated b/c at bottom level, just return both
+		if (*level == cd || g[cd][c1i * csize + c1j].leaf && g[cd][c2i * csize + c2j].leaf) {
 			*level = cd;
 			return std::make_pair(&g[cd][c1i * csize + c1j], &g[cd][c2i * csize + c2j]);
-		} else if (g[cd][c1i * csize + c1j].used) {
+		} else if (!g[cd][c1i * csize + c1j].leaf) {
 			// terminated because c2 not used anymore. Keep following c1 to the end then return it.
-			while (cd < *level && g[cd][c1i * csize + c1j].used) {
+			while (cd < *level && !g[cd][c1i * csize + c1j].leaf) {
 				cd++;
 				csize <<= 1;
 				c1i = 2*c1i + corner2[k][0];
 				c1j = 2*c1j + corner2[k][1];
 			}
-			if (!g[cd][c1i*csize + c1j].used) {
-				// went one level too far, back it up
-				cd--;
-				csize >>= 1;
-				c1i >>= 1;
-				c1j >>= 1;
-			}
 			*level = cd;
 			return std::make_pair(&g[cd][c1i * csize + c1j], nullCell);
-		} else if (g[cd][c2i * csize + c2j].used) {
+		} else if (!g[cd][c2i * csize + c2j].leaf) {
 			// terminated because c1 not used anymore. Keep following c2 to the end then return it.
-			while (cd < *level && g[cd][c2i * csize + c2j].used) {
+			while (cd < *level && !g[cd][c2i * csize + c2j].leaf) {
 				cd++;
 				csize <<= 1;
 				c2i = 2*c2i + corner1[k][0];
 				c2j = 2*c2j + corner1[k][1];
 			}
-			if (!g[cd][c2i*csize + c2j].used) {
-				// went one level too far, back it up
-				cd--;
-				csize >>= 1;
-				c2i >>= 1;
-				c2j >>= 1;
-			}
 			*level = cd;
 			return std::make_pair(&g[cd][c2i * csize + c2j], nullCell);
 		} else {
 			// neither c1 nor c2 used, but both were on previous level, so back both up 1 level and return both
-			cd--;
-			csize >>= 1;
-			c1i >>= 1;
-			c1j >>= 1;
-			c2i >>= 1;
-			c2j >>= 1;
-			*level = cd;
-			return std::make_pair(&g[cd][c1i * csize + c1j], &g[cd][c2i * csize + c2j]);
+            printf("THIS SHOULD NEVER HAPPEN\n");
 		}
 	}
 }
@@ -329,33 +307,50 @@ void testMultilevelNeighbors() {
 		testGrid[i] = new Cell[size*size]; 
 		for (int j = 0; j < size*size; j++) {
 			testGrid[i][j].used = false;
+            testGrid[i][j].leaf = false;
 		}
 	}
 
 	testGrid[0][0].used = true;
 	// level 1
 	testGrid[1][0].used = true;
+    testGrid[1][0].leaf = true;
 	testGrid[1][1].used = true;
 	testGrid[1][2].used = true;
 	testGrid[1][3].used = true;
+    testGrid[1][3].leaf = true;
 	// level 2
 	testGrid[2][2].used = true;
 	testGrid[2][3].used = true;
+    testGrid[2][3].leaf = true;
 	testGrid[2][6].used = true;
-	testGrid[2][7].used = true;	
+	testGrid[2][7].used = true;
+    testGrid[2][7].leaf = true;
 	testGrid[2][8].used = true;
+    testGrid[2][8].leaf = true;
 	testGrid[2][9].used = true;
+    testGrid[2][9].leaf = true;
 	testGrid[2][12].used = true;
+    testGrid[2][12].leaf = true;
 	testGrid[2][13].used = true;
+    testGrid[2][14].leaf = true;
 	// level 3	
 	testGrid[3][4].used = true;
+    testGrid[3][4].leaf = true;
 	testGrid[3][5].used = true;
+    testGrid[3][5].leaf = true;
 	testGrid[3][12].used = true;
+    testGrid[3][12].leaf = true;
 	testGrid[3][13].used = true;
+    testGrid[3][13].leaf = true;
 	testGrid[3][20].used = true;
+    testGrid[3][20].leaf = true;
 	testGrid[3][21].used = true;
+    testGrid[3][21].leaf = true;
 	testGrid[3][28].used = true;
+    testGrid[3][28].leaf = true;
 	testGrid[3][29].used = true;
+    testGrid[3][29].leaf = true;
 
 	// actual tests
 
@@ -418,13 +413,13 @@ std::pair<double, double> getGradient(double vals[], int sizes[], int size) {
 	return std::make_pair((vals[2] - vals[3])/(0.5/sizes[2] + 0.5/sizes[3] + 1.0/size), (vals[0]-vals[1])/(0.5/sizes[0] + 0.5/sizes[1] + 1.0/size));	
 }
 
-std::pair<double, double> getPressureGradient(Cell** g, int d, int i, int j) {
+std::pair<double, double> getPressureGradient(Cell** g, int d, int i, int j, int targetLevel) {
 	int size = 1<<d;
 	double vals[4];	
 	int sizes[4];
 	double h;
 	for (int k = 0; k < 4; k++) {
-		int level = d;
+		int level = targetLevel;
 		std::pair<Cell*, Cell*> neighbor = getNeighborInDir(grid, d, i, j, k, &level);
 		
 		if (neighbor.second == NULL) {
@@ -454,36 +449,40 @@ std::pair<double, double> getPressureGradient(Cell** g, int d, int i, int j) {
 	return std::make_pair(size * (vals[2] - vals[3])/2, size * (vals[0]-vals[1])/2);
 }*/
 
+std::pair<double, double> getVelocityGradient(Cell** g, int d, int i, int j) {
+    double vals[4];	
+	int sizes[4];
+
+	for (int k = 0; k < 4; k++) {
+		int level = levels - 1;
+		std::pair<Cell*, Cell*> neighbor = getNeighborInDir(g, d, i, j, k, &level);
+		if (neighbor.second == NULL) {
+		vals[k] = (k < 2) ? neighbor.first->vy : neighbor.first->vx;
+		} else {
+			if (k < 2) {
+				vals[k] = (neighbor.first->vy + neighbor.second->vy) / 2.0;
+			} else {
+				vals[k] = (neighbor.first->vx + neighbor.second->vx) / 2.0;
+			}
+		}	
+		sizes[k] = 1<<level;
+	}
+	
+	return getGradient(vals, sizes, 1<<d);
+}
 
 void computeVelocityDivergence(Cell** g) {
-	double vals[4];	
-	int sizes[4];
-	for (int d = 0; d < levels; d++) {
+    for (int d = 0; d < levels; d++) {
 		int size = 1<<d;
 		for (int i = 0; i < size; i++) {
 			for (int j = 0; j < size; j++) {
-                if (!g[d][i*size+j].used) continue;
-
 				for (int k = 0; k < 4; k++) {
-					int level = d;
-					std::pair<Cell*, Cell*> neighbor = getNeighborInDir(g, d, i, j, k, &level);
-					if (neighbor.second == NULL) {
-					vals[k] = (k < 2) ? neighbor.first->vy : neighbor.first->vx;
-					} else {
-						if (k < 2) {
-							vals[k] = (neighbor.first->vy + neighbor.second->vy) / 2.0;
-						} else {
-							vals[k] = (neighbor.first->vx + neighbor.second->vx) / 2.0;
-						}
-					}	
-					sizes[k] = 1<<level;
-				}
-				
-				std::pair<double, double> grad = getGradient(vals, sizes, size);
-				g[d][i*size+j].divV = grad.first + grad.second;
-			}
-		}
-	}
+				    std::pair<double, double> grad = getVelocityGradient(g, d, i, j);
+			    	g[d][i*size+j].divV = grad.first + grad.second;
+			   }   
+		    }
+    	}
+    }
 }
 
 void computeResidual(int d) {
@@ -496,7 +495,7 @@ void computeResidual(int d) {
 			if (!grid[d][i*size+j].used) {
 				//printf("       ");
 				continue;
-			} else if (d == levels - 1 || !grid[d+1][4*i*size + 2*j].used) { // if leaf cell, compute residual
+			} else if (d == levels - 1 || grid[d][i*size + j].leaf) { // if leaf cell, compute residual
 				// compute it: R = div(vx, vy) - 1/(ha)*sum of (s * grad) for each face
 				double faceGradSum = 0.0;
 				for (int k = 0; k < 4; k++) {
@@ -516,7 +515,7 @@ void computeResidual(int d) {
 				double R = grid[d][i*size+j].divV - flux;
 				
 				grid[d][i*size+j].R = R;
-				//printf("at [%d][%d], divV: %f, flux: %f, R: %f\n", i, j, grid[d][i*size+j].divV, flux, R);
+				printf("at [%d][%d], divV: %f, flux: %f, R: %f\n", i, j, grid[d][i*size+j].divV, flux, R);
 				// if a*R > e, not done
 				if (fabs(R) > eps) {
 					doneVCycle = false;
@@ -532,9 +531,9 @@ void computeResidual(int d) {
 				grid[d][i*size+j].R /= 4.0;
 			}
 
-			printf(" %.4f", grid[d][i*size+j].R);
+			//printf(" %.4f", grid[d][i*size+j].R);
 		}
-		printf("\n");
+		//printf("\n");
 	}
 	
 	printf("done residual\n");
@@ -549,7 +548,7 @@ bool relaxRecursive(int d, int i, int j, int ml) {
 	int size = 1<<d;
 	if (!grid[d][i*size+j].used) {
 		return true;
-	} else if (d == ml || (d < ml && !grid[d+1][4*i*size+2*j].used)) {
+	} else if (d == ml || grid[d][i*size+j].leaf) {
         // dp = (h*a*divV - bsum)/asum
 		double aSum = 0.0;
         double bSum = 0.0;
@@ -748,6 +747,7 @@ void runStep() {
 				grid[d][index].vy = oldGrid[d][index].vy;
 				grid[d][index].phi = oldGrid[d][index].phi;
 				grid[d][index].used = oldGrid[d][index].used;
+                grid[d][index].leaf = oldGrid[d][index].leaf;
 
 				if (!grid[d][index].used) continue;
 				
@@ -842,20 +842,20 @@ void runStep() {
 		for (int i = 0; i < size; i++) {
 			for (int j = 0; j < size; j++) {
 				if (!grid[d][i*size+j].used) continue;
-				std::pair<double, double> grad = getPressureGradient(grid, levels - 1, i, j);
-				grid[levels - 1][i*size+j].vx -= grad.first * dt;
-				grid[levels - 1][i*size+j].vy -= grad.second * dt;
-				//grid[levels - 1][i*size+j].vx -= grad.first;
-				//grid[levels - 1][i*size+j].vy -= grad.second;
+				std::pair<double, double> grad = getPressureGradient(grid, d, i, j, levels - 1);
+				grid[d][i*size+j].vx -= grad.first * dt;
+				grid[d][i*size+j].vy -= grad.second * dt;
+				//grid[d][i*size+j].vx -= grad.first;
+				//grid[d][i*size+j].vy -= grad.second;
 	
 	
 	
 				// clamp velocity on boundary condition
 				if (i == 0 || i == size-1) {
-					grid[levels - 1][i*size+j].vy = 0.0;
+					grid[d][i*size+j].vy = 0.0;
 				}
 				if (j == 0 || j == size-1) {
-					grid[levels - 1][i*size+j].vx = 0.0;
+					grid[d][i*size+j].vx = 0.0;
 				}	
 			}
 		}
@@ -906,6 +906,7 @@ void initSim() {
         for (int i = 0; i < size; i++) {
             for (int j = 0; j < size; j++) {
                 grid[d][i*size+j].used = false;
+                grid[d][i*size+j].leaf = false;
                 grid[d][i*size+j].p = 0;
                 grid[d][i*size+j].vx = 0;
                 grid[d][i*size+j].vy = 0;
@@ -942,6 +943,7 @@ void initSim() {
 			grid[level][i*size+j].phi = 1 - (abs(i-start) + abs(j-start));
 			grid[level][i*size+j].phi /= size;
 			grid[level][i*size+j].used = true;
+            grid[level][i*size+j].leaf = true;
 			printf (" %.2f", grid[level][i*size+j].p);
 		}
 		printf("\n");
@@ -969,6 +971,7 @@ void initSim() {
 				grid[d][i*size+j].vy /= 4.0;
 				grid[d][i*size+j].phi /= 4.0;
 				grid[d][i*size+j].used = true;
+                grid[d][i*size+j].leaf = false;
 				printf(" %.2f", grid[d][i*size+j].p);
 			
 			}
