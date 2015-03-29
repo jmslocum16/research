@@ -26,6 +26,7 @@ bool drawVelocity;
 bool drawCells;
 bool screenshot;
 int frameNumber = 0;
+int numToRun = 0;
 
 double dt = .02;
 
@@ -945,7 +946,9 @@ int main(int argc, char** argv) {
 			statScreenshotDir();
 		} else if (!strcmp("--cells", arg)) {
 			drawCells = true;
-		}
+		} else if (!strcmp("-run", arg)) {
+            numToRun = atoi(argv[++i]);
+        }
 	}
 	levelToDisplay = levels - 1;
 	printf("headless: %d, levels: %d\n", headless, levels);
@@ -954,6 +957,12 @@ int main(int argc, char** argv) {
 	srandom(time(NULL));
 
 	initSim();
+
+    printf("pre-running %d steps\n", numToRun
+    );
+    for (int i = 0; i < numToRun; i++) {
+        runStep();
+    }
 
 	// test neighbors
 	testMultilevelNeighbors();
