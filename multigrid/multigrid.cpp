@@ -493,7 +493,7 @@ void computeResidual(int d) {
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
 			if (!grid[d][i*size+j].used) {
-				//printf("       ");
+				printf("       ");
 				continue;
 			} else if (d == levels - 1 || !grid[d+1][4*i*size + 2*j].used) { // if leaf cell, compute residual
 				// compute it: R = div(vx, vy) - 1/(ha)*sum of (s * grad) for each face
@@ -524,15 +524,16 @@ void computeResidual(int d) {
 					//printf("done with this cell already, %f is smaller than epsilon of %f\n", fabs(grid[d][i*size+j].R), eps);
 				}
 			} else {
+                grid[d][i*size+j].R = 0.0;
 				for (int k = 0; k < 4; k++) {
-					grid[d][i*size+j].R += grid[d+1][(2*i+k/2)*2*size+2*j+(k%2)].R;
+					grid[d][i*size+j].R += grid[d+1][(2*i+(k/2))*2*size+2*j+(k%2)].R;
 				}
 				grid[d][i*size+j].R /= 4.0;
 			}
 
-			//printf(" %.4f", grid[d][i*size+j].R);
+			printf(" %.4f", grid[d][i*size+j].R);
 		}
-		//printf("\n");
+		printf("\n");
 	}
 	
 	printf("done residual\n");
@@ -610,7 +611,7 @@ void relax(int d, int r) {
 	}
 	bool done = false;
 	int maxlevel = d;
-	while (r-- > 0 && !done) {
+	while (/*r-- > 0 && */!done) {
 		done = relaxRecursive(0, 0, 0, maxlevel);
 		for (d = 0; d <= maxlevel; d++) {
 			size = 1<<d;
@@ -693,7 +694,7 @@ void runStep() {
 
 	int numCycles = 0;
 	
-	while (!doneVCycle) {
+	while (!doneVCycle && numCycles < 100) {
 		numCycles++;
 		//printf("start v cycle %d\n", numCycles);
 
@@ -864,7 +865,7 @@ void initSim() {
 	}
 
 	// MAKE MULTILEVEL
-	/*int newd = levels - 2;
+	int newd = levels - 2;
 	int newsize = 1<<newd;
 	int R = 0;
 	int C = newsize/2;
@@ -872,7 +873,7 @@ void initSim() {
 		int newR = R*2 + (k/2);
 		int newC = C*2 + (k%2);
 		grid[newd + 1][newR*2*newsize+newC].used = false;
-	}*/
+	}
 
 	// clamp starting velocity
 	for (int d = 0; d < levels; d++) {
