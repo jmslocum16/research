@@ -515,7 +515,7 @@ void computeResidual(int d) {
 				double R = grid[d][i*size+j].divV - flux;
 				
 				grid[d][i*size+j].R = R;
-				printf("at [%d][%d], divV: %f, flux: %f, R: %f\n", i, j, grid[d][i*size+j].divV, flux, R);
+				//printf("at [%d][%d], divV: %f, flux: %f, R: %f\n", i, j, grid[d][i*size+j].divV, flux, R);
 				// if a*R > e, not done
 				if (fabs(R) > eps) {
 					doneVCycle = false;
@@ -571,9 +571,10 @@ bool relaxRecursive(int d, int i, int j, int ml) {
         // dp = (h*R - bsum)/asum
         grid[d][i*size+j].temp = (grid[d][i*size+j].R/size - bSum) / aSum;
 		double diff = oldDif - grid[d][i*size+j].temp;
+
+        //printf("relaxing[%d][%d][%d]: aSum: %f, bSumL %f, R: %f, result: %f, diff from old: %f\n", d, i, j, aSum, bSum, grid[d][i*size+j].R, grid[d][i*size+j].temp, diff);
 		if (fabs(diff) > eps) {
 			return false;
-			//printf("relaxing[%d][%d]: pSum: %f, R: %f, result: %f, diff from old: %f\n", i, j, pSum, grid[d][i*size+j].R, newdp[i*size+j], diff);
 			//printf("get out\n");
 		}
 		return true;
@@ -602,7 +603,7 @@ void relax(int d, int r) {
 			} else {
 				// inject from higher level
 				grid[d][i*size+j].dp = grid[d-1][i/2 * size/2 + j/2].dp;
-				// printf("initial guess for [%d][%d].dp is %f\n", i, j, grid[d][i*size+j].dp);
+				//printf("initial guess for [%d][%d].dp is %f\n", i, j, grid[d][i*size+j].dp);
 			}
 			//printf(" %.3f", grid[d][i*size+j].dp);
 			//printf(" %.3f", grid[i*size+j].R);
@@ -621,13 +622,15 @@ void relax(int d, int r) {
 				for (int j = 0; j < size; j++) {
 					if (grid[d][i*size+j].used) {
 						grid[d][i*size+j].dp = grid[d][i*size+j].temp;
+                        //printf(" %.4f", grid[d][i*size+j].dp);
 					}
 				}
+                //printf("\n");
 			}
 		}
 	}
 	//printf("dp matrix with %d cycles left: \n", r);
-    printf("relaxing took %d cycles\n", totalCycles);
+    /*printf("relaxing took %d cycles\n", totalCycles);
     for (d = 0; d <= maxlevel; d++) {
         int size = 1<<d;
         printf("level %d\n", d);
@@ -639,7 +642,7 @@ void relax(int d, int r) {
             }
             printf("\n");
         }
-    }
+    }*/
 }
 
 
@@ -651,7 +654,7 @@ void expand(int d, int i, int j) {
     Cell cur = grid[d][i*size+j];
     // std::pair<double, double> levelSetGrad;
     for (int k = 0; k < 4; k++) {
-        Cell child = grid[d+1][(2*i+(k/2))*2*size + 2*j + (k%2)];
+        Cell& child = grid[d+1][(2*i+(k/2))*2*size + 2*j + (k%2)];
         child.used = true;
         child.leaf = true;
         int constX = k%2 == 0 ? -1 : 1;
@@ -668,7 +671,7 @@ void contract(int d, int i, int j) {
     printf("contracting cell [%d][%d][%d]\n", d, i, j);
     int size = 1<<d;
     for (int k = 0; k < 4; k++) {
-        Cell child = grid[d+1][(2*i+(k/2))*2*size + 2*j + (k%2)];
+        Cell& child = grid[d+1][(2*i+(k/2))*2*size + 2*j + (k%2)];
         child.used = false;
         child.leaf = false;
     }
@@ -680,7 +683,7 @@ void contract(int d, int i, int j) {
 double pressureThresh = .01;
 bool pGradAdaptFunction(int d, int i, int j) {
     std::pair<double, double> pgrad = getPressureGradient(grid, d, i, j, levels - 1);
-    return fabs(pgrad.first + pgrad.second) < pressureThresh;
+    return fabs(pgrad.first + pgrad.second) > pressureThresh;
 }
 
 bool adaptFunction(int d, int i, int j) {
@@ -772,7 +775,7 @@ void runStep() {
 	}
 	
     // given new velocity field, do adaptivy
-    //recursiveAdaptivity(0, 0, 0);
+    recursiveAdaptivity(0, 0, 0);
 	
 	// grid's vx and vy are now provisional velocity
 	// compute velocity divergence of new grid to use in residual calcuation
@@ -989,6 +992,7 @@ void initSim() {
 		int newC = C*2 + (k%2);
 		grid[newd + 1][newR*2*newsize+newC].used = false;
 	}*/
+    //contract(level - 1, 0, (1<< (level-2)));
 
 	// clamp starting velocity
 	for (int d = 0; d < levels; d++) {
