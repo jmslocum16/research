@@ -1,4 +1,10 @@
+#ifdef __APPLE__
+#include <GLUT/glut.h>  // GLUT, include glu.h and gl.h
+#include <stdlib.h>
+#endif
+#ifdef __linux__
 #include <GL/glut.h>  // GLUT, include glu.h and gl.h
+#endif
 #include <bitmap.h>
 
 #include <assert.h>

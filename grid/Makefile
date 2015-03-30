@@ -1,9 +1,17 @@
 PF = 
 
+UNAME := $(shell uname)
+
+ifeq ($(UNAME), Linux)
+LIBS = -lGL -lglut -lz -lX11 -ldl -lXext
 INCLUDE = -I/usr/local/include -I/usr/include -I/usr/X11/include -I/p/include -I/usr/include/X11 -I../common
 LIBDIR = -L/usr/local/lib -L/usr/lib -L/usr/X11/lib -L/p/lib -L/usr/lib/x86_64-linux-gnu
-
-LIBS = -lGL -lglut -lz -lX11 -ldl -lXext
+endif
+ifeq ($(UNAME), Darwin)
+LIBS = -framework OpenGL -framework GLUT
+LIBDIR = -L/usr/lib -L/usr/X11/lib
+INCLUDE = -I/usr/include -I../common
+endif
 
 CFLAGS = -g $(PF)
 
