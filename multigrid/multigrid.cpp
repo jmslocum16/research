@@ -477,6 +477,36 @@ std::pair<double, double> getVelocityGradient(Cell** g, int d, int i, int j) {
 	return getGradient(vals, sizes, 1<<d);
 }
 
+std::pair<double, double> getVelocitySingleGradient(Cell** g, int d, int i, int j, bool x) {
+    double vals[4];	
+	int sizes[4];
+
+	for (int k = 0; k < 4; k++) {
+		int level = levels - 1;
+		std::pair<Cell*, Cell*> neighbor = getNeighborInDir(g, d, i, j, k, &level);
+		if (neighbor.second == NULL) {
+		vals[k] = x ? neighbor.first->vx : neighbor.first->vy;
+		} else {
+			if (x) {
+				vals[k] = (neighbor.first->vx + neighbor.second->vx) / 2.0;
+			} else {
+				vals[k] = (neighbor.first->vy + neighbor.second->vy) / 2.0;
+			}
+		}	
+		sizes[k] = 1<<level;
+	}
+	
+	return getGradient(vals, sizes, 1<<d);
+}
+
+// curl(F) = d(Fy)/dx - d(Fx)/dy
+double getCurl(Cell** g, int d, int i, int j) {
+	std::pair<double, double> xgrad = getVelocitySingleGradient(g, d, i, j, true);
+	std::pair<double, double> ygrad = getVelocitySingleGradient(g, d, i, j, false);
+	return ygrad.first - xgrad.second;
+	
+}
+
 void computeVelocityDivergence(Cell** g) {
     for (int d = 0; d < levels; d++) {
 		int size = 1<<d;
@@ -686,10 +716,16 @@ void contract(int d, int i, int j) {
 
 // returns true if leaf should be expanded, false if it should not
 
+double curlThresh = .01;
+double curlAdaptFunction(int d, int i, int j) {
+	double curl = getCurl(grid, d, i, j);
+	return fabs(curl) > curlThresh / (1<<d);
+}
+
 double pressureThresh = .01;
 bool pGradAdaptFunction(int d, int i, int j) {
     std::pair<double, double> pgrad = getPressureGradient(grid, d, i, j, levels - 1);
-    return fabs(pgrad.first + pgrad.second) > pressureThresh;
+    return fabs(pgrad.first + pgrad.second) > pressureThresh/(1<<d);
 }
 
 bool adaptFunction(int d, int i, int j) {
@@ -781,7 +817,7 @@ void runStep() {
 	}
 	
     // given new velocity field, do adaptivy
-    recursiveAdaptivity(0, 0, 0);
+    //recursiveAdaptivity(0, 0, 0);
 	
 	// grid's vx and vy are now provisional velocity
 	// compute velocity divergence of new grid to use in residual calcuation

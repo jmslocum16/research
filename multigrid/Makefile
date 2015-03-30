@@ -1,4 +1,4 @@
-PF = 
+PF = -w
 
 
 UNAME := $(shell uname)
