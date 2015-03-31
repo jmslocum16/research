@@ -709,13 +709,29 @@ void expand(int d, int i, int j) {
 
 void contract(int d, int i, int j) {
     printf("contracting cell [%d][%d][%d]\n", d, i, j);
+	// average child values and set used/leaf
     int size = 1<<d;
-    for (int k = 0; k < 4; k++) {
+	grid[d][i*size+j].p = 0.0;
+	grid[d][i*size+j].vx = 0.0;
+	grid[d][i*size+j].vy = 0.0;
+	grid[d][i*size+j].phi = 0.0;
+    
+	for (int k = 0; k < 4; k++) {
         Cell& child = grid[d+1][(2*i+(k/2))*2*size + 2*j + (k%2)];
-        child.used = false;
+		grid[d][i*size+j].p += child.p;
+		grid[d][i*size+j].vx += child.vx;
+		grid[d][i*size+j].vy += child.vy;
+		grid[d][i*size+j].phi += child.phi;
+     	child.used = false;
         child.leaf = false;
-    }
-    grid[d][i*size+j].leaf = true;
+	}
+	
+	grid[d][i*size+j].p /= 4.0;
+	grid[d][i*size+j].vx /= 4.0;
+	grid[d][i*size+j].vy /= 4.0;
+	grid[d][i*size+j].phi /= 4.0;
+	grid[d][i*size+j].used = true;
+    grid[d][i*size+j].leaf = false;
 }
 
 // returns true if leaf should be expanded, false if it should not
