@@ -162,7 +162,7 @@ void display() {
 			int size = 1<<d;
 			for (int i = 0; i < size; i++) {
 				for (int j = 0; j < size; j++) {
-					if (grid[d][i*size+j].used) {
+					if (grid[d][i*size+j].leaf || d == levelToDisplay) {
 						minP = std::min(minP, grid[d][i*size+j].p);
 						maxP = std::max(maxP, grid[d][i*size+j].p);
 					}
@@ -176,9 +176,11 @@ void display() {
 			int size = 1<<d;
 			for (int i = 0; i < size; i++) {
 				for (int j = 0; j < size; j++) {
-					double x = grid[d][i*size+j].vx;
-					double y = grid[d][i*size+j].vy;
-					maxMag = std::max(maxMag, sqrt(x*x + y*y));
+					if (grid[d][i*size+j].leaf || d == levelToDisplay) {
+						double x = grid[d][i*size+j].vx;
+						double y = grid[d][i*size+j].vy;
+						maxMag = std::max(maxMag, sqrt(x*x + y*y));
+					}
 				}
 			}
 		}
@@ -874,7 +876,7 @@ void runStep() {
 
 		// TODO REMOVE
 		// doneVCycle = true;
-		if (numCycles == 1) break;
+		//if (numCycles == 1) break;
 
 		//printf("end v cycle\n");
 	}
@@ -959,8 +961,8 @@ void initSim() {
 		grid[d] = new Cell[size*size];
 		oldGrid[d] = new Cell[size*size];
 	}
-	int level = levels/2;
-	//int level = levels - 1;
+	//int level = levels/2;
+	int level = levels - 2;
 
     for (int d = levels - 1; d > level; d--) {
         int size = 1<<d;
@@ -1042,7 +1044,7 @@ void initSim() {
 
 	// MAKE MULTILEVEL
     contract(level - 1, 0, 1<< (level-2));
-	expand(level, (1<<level)-1, 1<<(level-1));
+	//expand(level, (1<<level)-1, 1<<(level-1));
 
 	// clamp starting velocity
 	for (int d = 0; d < levels; d++) {
@@ -1117,8 +1119,8 @@ int main(int argc, char** argv) {
             numToRun = atoi(argv[++i]);
         }
 	}
-	levelToDisplay = levels/2;
-    //levelToDisplay = levels - 1;
+	//levelToDisplay = levels/2;
+    levelToDisplay = levels - 1;
 	printf("headless: %d, levels: %d\n", headless, levels);
 
 	// seed random
