@@ -21,6 +21,7 @@ void initGL() {
 }
 
 // options
+int windowid;
 int windowWidth = 640;
 int windowHeight = 640;
 
@@ -649,7 +650,7 @@ void relax(int d, int r) {
 	bool done = false;
 	int maxlevel = d;
     int totalCycles = 0;
-	while (/*r-- > 0 && */!done) {
+	while (r-- > 0 && !done) {
         totalCycles++;
 		done = relaxRecursive(0, 0, 0, maxlevel);
 		for (d = 0; d <= maxlevel; d++) {
@@ -666,19 +667,19 @@ void relax(int d, int r) {
 		}
 	}
 	//printf("dp matrix with %d cycles left: \n", r);
-    /*printf("relaxing took %d cycles\n", totalCycles);
+    printf("relaxing took %d cycles\n", totalCycles);
     for (d = 0; d <= maxlevel; d++) {
         int size = 1<<d;
-        printf("level %d\n", d);
+        //printf("level %d\n", d);
         for (int i = 0; i < size; i++) {
             for (int j = 0; j < size; j++) {
                 if (grid[d][i*size+j].used) {
-                    printf(" %.4f", grid[d][i*size+j].dp);
+                    //printf(" %.4f", grid[d][i*size+j].dp);
                 }
             }
-            printf("\n");
+            //printf("\n");
         }
-    }*/
+    }
 }
 
 
@@ -701,6 +702,7 @@ void expand(int d, int i, int j) {
         // child.phi = ...
     }
     grid[d][i*size+j].used = true;
+	grid[d][i*size+j].leaf = false;
 }
 
 void contract(int d, int i, int j) {
@@ -815,10 +817,6 @@ void runStep() {
 			}
 		}
 	}
-	
-    // given new velocity field, do adaptivy
-    //recursiveAdaptivity(0, 0, 0);
-	
 	// grid's vx and vy are now provisional velocity
 	// compute velocity divergence of new grid to use in residual calcuation
 	computeVelocityDivergence(grid);
@@ -876,10 +874,13 @@ void runStep() {
 
 		// TODO REMOVE
 		// doneVCycle = true;
-		//if (numCycles == 8) break;
+		if (numCycles == 1) break;
 
 		//printf("end v cycle\n");
 	}
+	
+    // given new state, do adaptivity
+    //recursiveAdaptivity(0, 0, 0);
 
 	// correct velocity with updated pressure field to make non-divergent
 	for (int d = 0; d < levels; d++) {
@@ -930,6 +931,21 @@ void runStep() {
 	
 	
 	printf("done step, took %d iterations\n", numCycles);
+	for (int d = 0; d < levels; d++) {
+		printf("level %d\n", d);
+		int size = 1<<d;
+		for (int i = 0; i < size; i++) {
+			for (int j = 0; j < size; j++) {
+				if (grid[d][i*size+j].used) {
+					printf(" %.3f", grid[d][i*size+j].p);
+				} else {
+					printf("      ");
+				}
+			}
+			printf("\n");
+		}
+	}
+
 	// increase frame number here instead of in display so that you get 1 of each frame, not dependent on glut's redrawing, like on alt-tabbing or anything
 	frameNumber++;
 }
@@ -967,14 +983,14 @@ void initSim() {
 		for (int j = 0; j < size; j++) {
 			//grid[i*size+j].p = i*size+j;
 			grid[level][i*size+j].p = 0;
-			if (i == start && j == start) {
+			if ((i == start-1 || i == start) && (j == start || j == start-1)) {
 				grid[level][i*size+j].p = 1.0;
 			}
             grid[level][i*size+j].vx = 0.0;
             grid[level][i*size+j].vy = 0.0;
 			//grid[i*size+j].vx = (sinkC - j)/(1.0*size);
 			//grid[i*size+j].vy = (sinkR - i)/(1.0*size);
-			if (i == start)
+			if (i == start || i == start-1)
 				grid[level][i*size+j].vx = -1;
 			// normalize
 			/*double len = sqrt(grid[level][i*size+j].vx*grid[level][i*size+j].vx + grid[level][i*size+j].vy*grid[level][i*size+j].vy);
@@ -1025,16 +1041,8 @@ void initSim() {
 	}
 
 	// MAKE MULTILEVEL
-	/*int newd = levels - 2;
-	int newsize = 1<<newd;
-	int R = 0;
-	int C = newsize/2;
-	for (int k = 0; k < 4; k++) {
-		int newR = R*2 + (k/2);
-		int newC = C*2 + (k%2);
-		grid[newd + 1][newR*2*newsize+newC].used = false;
-	}*/
-    //contract(level - 1, 0, (1<< (level-2)));
+    contract(level - 1, 0, 1<< (level-2));
+	expand(level, (1<<level)-1, 1<<(level-1));
 
 	// clamp starting velocity
 	for (int d = 0; d < levels; d++) {
@@ -1073,6 +1081,10 @@ void keyboard(unsigned char key, int x, int y) {
 			if (!headless) {
 				glutPostRedisplay();
 			}
+			break;
+		case 27:
+			glutDestroyWindow(windowid);
+			exit(0);
 			break;
 	}
 }
@@ -1114,18 +1126,20 @@ int main(int argc, char** argv) {
 
 	initSim();
 
+	// test neighbors
+	//testMultilevelNeighbors();
+
+
+
     printf("pre-running %d steps.\n", numToRun);
     for (int i = 0; i < numToRun; i++) {
         runStep();
     }
 
-	// test neighbors
-	testMultilevelNeighbors();
-
 	// TODO don't do if headless
 	glutInitWindowSize(windowWidth, windowHeight);   // Set the window's initial width & height
 	glutInitWindowPosition(50, 50);
-	glutCreateWindow("MultiGrid");  // Create window with the given title
+	windowid = glutCreateWindow("MultiGrid");  // Create window with the given title
 	glutDisplayFunc(display);       // Register callback handler for window re-paint event
 	glutKeyboardFunc(keyboard);
 	initGL();                       // Our own OpenGL initialization
