@@ -731,7 +731,7 @@ void contract(int d, int i, int j) {
 	grid[d][i*size+j].vy /= 4.0;
 	grid[d][i*size+j].phi /= 4.0;
 	grid[d][i*size+j].used = true;
-    grid[d][i*size+j].leaf = false;
+    grid[d][i*size+j].leaf = true;
 }
 
 // returns true if leaf should be expanded, false if it should not
