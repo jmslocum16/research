@@ -35,9 +35,7 @@ bool screenshot;
 int frameNumber = 0;
 int numToRun = 0;
 
-double dt = .02;
-
-// GRID[R][C] maps to first quadrant by R->Y, C->X!!
+double dt = .002;
 
 struct Cell {
 	double p, vx, vy, dp, R, phi, divV, temp; // pressure ,x velocity, y velocity, pressure correction, residual, level set value
@@ -907,10 +905,10 @@ void runStep() {
 			for (int j = 0; j < size; j++) {
 				if (!grid[d][i*size+j].used) continue;
 				std::pair<double, double> grad = getPressureGradient(grid, d, i, j, levels - 1);
-				grid[d][i*size+j].vx -= grad.first * dt;
-				grid[d][i*size+j].vy -= grad.second * dt;
-				//grid[d][i*size+j].vx -= grad.first;
-				//grid[d][i*size+j].vy -= grad.second;
+				//grid[d][i*size+j].vx -= grad.first * dt;
+				//grid[d][i*size+j].vy -= grad.second * dt;
+				grid[d][i*size+j].vx -= grad.first;
+				grid[d][i*size+j].vy -= grad.second;
 	
 	
 	
@@ -926,7 +924,7 @@ void runStep() {
 	}
 
 
-	printf("advecting phi\n");
+	//printf("advecting phi\n");
 	// dphi/dt + v dot grad(phi) = 0
 	// dphi/dt = -v dot grad(phi)
 	/*size = 1 << (levels - 1);
@@ -1000,9 +998,9 @@ void initSim() {
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
 			//grid[i*size+j].p = i*size+j;
-			grid[level][i*size+j].p = 0;
+			grid[level][i*size+j].p = 1.0/size/size;
 			if ((i == start-1 || i == start) && (j == start || j == start-1)) {
-				grid[level][i*size+j].p = 1.0;
+				//grid[level][i*size+j].p = 1.0;
 			}
             grid[level][i*size+j].vx = 0.0;
             grid[level][i*size+j].vy = 0.0;
