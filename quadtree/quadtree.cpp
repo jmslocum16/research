@@ -305,6 +305,26 @@ class qNode {
 			
 			return getGradient(vals, sizes, 1<<level);
 		}
+
+		std::pair<double, double> getVelocityProductGradient(int targetLevel) {
+			 double vals[4];	
+			int sizes[4];
+		
+			for (int k = 0; k < 4; k++) {
+				int ml = targetLevel;
+				std::pair<qNode*, qNode*> neighbor = getNeighborInDir(k, &ml);
+				if (neighbor.second == NULL) {
+					vals[k] = neighbor.first->vx * neighbor.first->vy;
+				} else {
+					double x = (neighbor.first->vx + neighbor.second->vx) / 2.0;
+					double y = (neighbor.first->vy + neighbor.second->vy) / 2.0;
+					vals[k] = x * y;
+				}	
+				sizes[k] = 1<<ml;
+			}
+			
+			return getGradient(vals, sizes, 1<<level);
+		}
 		
 		// curl(F) = d(Fy)/dx - d(Fx)/dy
 		double getCurl() {
@@ -396,6 +416,30 @@ qNode* get(qNode* node, int d, int i, int j) {
 	int newi = (i < midi) ? 0 : 1;
 	int newj = (j < midj) ? 0 : 1;
 	return get(node->children[newi*2+newj], d, i, j);
+}
+
+qNode* getLeaf(qNode* node, double x, double y) {
+	if (node->leaf) {
+		return node;
+	}
+	int size = 1<<node->level;
+	double midx = ((double)node->j)/size + 0.5/size;
+	double midy = ((double)node->i)/size + 0.5/size;
+	int newj = x < midx ? 0 : 1;
+	int newi = y < midy ? 0 : 1;
+	return getLeaf(node->children[2*newi + newj], x, y);
+}
+
+qNode* getSemiLagrangianLookback(qNode* r, double x, double y, int steps) {
+	double newdt = dt / steps;
+	qNode* cur = getLeaf(r, x, y);
+	while (steps--) {
+		x -= cur->vx * newdt;
+		y -= cur->vy * newdt;
+		if (x < 0 || x > 1)
+		cur = getLeaf(r, x, y);
+	}
+	return cur;
 }
 
 // not fast but who cares
@@ -894,19 +938,25 @@ void advectAndCopy(qNode* node, qNode* oldNode) {
 	//node->phi = oldNode->phi;
 
 
-	// advect: U** = Un - An*dt, An = div(V) * V TODO WRONG
+	// advect: U** = Un - An*dt
 	// An = U*gradU, U*grad = du/dx + du/dy, so U* that is du*U/dx + du*U/dy
-	// TODO if this true, don't need to compute divV on old grid before this
+	// An = <dVx^2/dx + dVyVy/dy, dXyVy/dx + dVy^2/dy>
+	int size = 1<<node->level;
+	double x = (node->j + 0.5)/size;
+	double y = (node->i + 0.5)/size;
+	qNode* last = getSemiLagrangianLookback(oldNode, x, y, 1);
+	printf("lookback from node %d (%d, %d) gives %d (%d, %d)", node->level, node->i, node->j, last->level, last->i, last->j);
+	std::pair<double, double> vGrad = last->getVelocityGradient(levels - 1);
+	std::pair<double, double> vProductGrad = last->getVelocityProductGradient(levels - 1);
+
+	double advectX = 2 * node->vx * vGrad.first + vProductGrad.second;
+	double advectY = vProductGrad.first + 2 * node->vy * vGrad.second;
 	
-	double advectX = oldNode->divV * node->vx;
-	double advectY = oldNode->divV * node->vy;
-	//printf("advecting grid[%d][%d][%d] by (%f, %f)\n", k, i, j, advectX, advectY);
+	//printf("advecting grid[%d][%d][%d] by (%f, %f)\n", k, i, j, advectX, advectY);	
 	//printf("pressure at [%d][%d][%d]: %f\n", k, i, j, grid[k][i*size+j].p);
 
-	advectX *= dt;
-	advectY *= dt;
-	node->vx -= advectX;
-	node->vy -= advectY;
+	node->vx -= advectX * dt;
+	node->vy -= advectY * dt;
 
 	// add gravity TODO(make better)
 	//grid[index].vy -= .98 * dt;
@@ -978,7 +1028,7 @@ void runStep() {
 
 	// compute velocity divergence for advection calculation
 	// TODO fix?
-	oldRoot->computeVelocityDivergence();
+	//oldRoot->computeVelocityDivergence();
 	
 	// advect velocity, copy old stuff
 	//printf("advecting velocity\n");
