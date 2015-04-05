@@ -5,3 +5,4 @@ grid/grid
 multigrid/multigrid
 multigrid/old
 quadtree/quadtree
+*.DS_Store
