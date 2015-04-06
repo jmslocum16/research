@@ -343,23 +343,45 @@ class qNode {
 			}
 		}
 
+		std::pair<double, double> getVelocityAt(double x, double y) {
+    		std::pair<double, double> xGrad = getVelocitySingleGradient(levels - 1, true);
+			std::pair<double, double> yGrad = getVelocitySingleGradient(levels - 1, false);
+			int size = 1<<level;
+			double dx = x - (j + 0.5)/size;
+			dx = std::max(-0.5, std::min(dx, 0.5));
+			double dy = y - (i + 0.5)/size;
+			dy = std::max(-0.5, std::min(dy, 0.5));
+			double newvx = vx + dx * xGrad.first + dy * xGrad.second;
+			double newvy = vy + dx * yGrad.first + dy * yGrad.second;
+			return std::make_pair(newvx, newvy);
+		}
+		
+		double getPressureAt(double x, double y) {
+    		std::pair<double, double> pGrad = getPressureGradient(levels - 1);
+			int size = 1<<level;
+			double dx = x - (j + 0.5)/size;
+			double dy = y - (i + 0.5)/size;
+			return p + dx * pGrad.first + dy * pGrad.second;
+		}
+
 		// adaptivity
 		void expand() {
 			assert(leaf);
     		printf("expanding cell %d, (%d, %d)\n", level, i, j);
-    		std::pair<double, double> pressureGrad = getPressureGradient(levels - 1); // TODO should these be this level?.. maybe if it's a leaf do multilevel otherwise its level?
-    		std::pair<double, double> velocityGrad = getVelocityGradient(levels - 1);
     		int size = 1<<level;
     		// std::pair<double, double> levelSetGrad;
     		for (int k = 0; k < 4; k++) {
         		int constX = k%2 == 0 ? -1 : 1;
         		int constY = k/2 == 0 ? -1 : 1;
+				double newx = (j + 0.5)/size + (constX*.25)/size;
+				double newy = (i + 0.5)/size + (constY*.25)/size;
 				this->children[k] = new qNode(this, 2*i+(k/2), 2*j+(k%2));
 
-        		children[k]->p = p + (constX * .25/size) * pressureGrad.first + (constY * .25/size) * pressureGrad.second;
+				children[k]->p = getPressureAt(newx, newy);
 				// TODO incorporate full velocity gradients?
-        		children[k]->vx = vx + (constX * .25/size) * velocityGrad.first;
-        		children[k]->vy = vy + (constY * .25/size) * velocityGrad.second;
+				std::pair<double, double> newVel = getVelocityAt(newx, newy);
+        		children[k]->vx = newVel.first;
+        		children[k]->vy = newVel.second;
         		// children[k]->phi = ...
     		}
 			setChildrenNeighbors();
@@ -430,14 +452,13 @@ qNode* getLeaf(qNode* node, double x, double y) {
 	return getLeaf(node->children[2*newi + newj], x, y);
 }
 
-qNode* getSemiLagrangianLookback(qNode* r, double x, double y, int steps) {
+qNode*  getSemiLagrangianLookback(qNode* r, double* x, double* y, int steps) {
 	double newdt = dt / steps;
-	qNode* cur = getLeaf(r, x, y);
+	qNode* cur = getLeaf(r, *x, *y);
 	while (steps--) {
-		x -= cur->vx * newdt;
-		y -= cur->vy * newdt;
-		if (x < 0 || x > 1)
-		cur = getLeaf(r, x, y);
+		*x -= cur->vx * newdt;
+		*y -= cur->vy * newdt;
+		cur = getLeaf(r, *x, *y);
 	}
 	return cur;
 }
@@ -846,7 +867,7 @@ void recursiveUpdate(qNode* node, int ml) {
 void relax(int d, int r) {
 	assert (d < levels);
 
-	printf("relaxing level %d\n", d);
+	//printf("relaxing level %d\n", d);
 	// get initial gress from previous level, if possible
 	recursiveInject(root, d);
 
@@ -877,7 +898,7 @@ void relax(int d, int r) {
 
 // returns true if leaf should be expanded, false if it should not
 
-double curlThresh = .01;
+double curlThresh = .1;
 double curlAdaptFunction(qNode* node) {
 	double curl = node->getCurl();
 	return fabs(curl) > curlThresh / (1<<node->level);
@@ -890,8 +911,8 @@ bool pGradAdaptFunction(qNode* node) {
 }
 
 bool adaptFunction(qNode* node) {
-    return pGradAdaptFunction(node);
-	// return curlAdaptFunction(node);
+    //return pGradAdaptFunction(node);
+	return curlAdaptFunction(node);
 }
 
 void recursiveAdaptivity(qNode* node) {
@@ -944,13 +965,14 @@ void advectAndCopy(qNode* node, qNode* oldNode) {
 	int size = 1<<node->level;
 	double x = (node->j + 0.5)/size;
 	double y = (node->i + 0.5)/size;
-	qNode* last = getSemiLagrangianLookback(oldNode, x, y, 1);
-	printf("lookback from node %d (%d, %d) gives %d (%d, %d)", node->level, node->i, node->j, last->level, last->i, last->j);
+	qNode* last= getSemiLagrangianLookback(oldNode, &x, &y, 1);
+	//printf("lookback from node %d (%d, %d) gives %d (%d, %d)", node->level, node->i, node->j, last->level, last->i, last->j);
 	std::pair<double, double> vGrad = last->getVelocityGradient(levels - 1);
 	std::pair<double, double> vProductGrad = last->getVelocityProductGradient(levels - 1);
+	std::pair<double, double> velInterp = last->getVelocityAt(x, y);
 
-	double advectX = 2 * node->vx * vGrad.first + vProductGrad.second;
-	double advectY = vProductGrad.first + 2 * node->vy * vGrad.second;
+	double advectX = 2 * velInterp.first * vGrad.first + vProductGrad.second;
+	double advectY = vProductGrad.first + 2 * velInterp.second * vGrad.second;
 	
 	//printf("advecting grid[%d][%d][%d] by (%f, %f)\n", k, i, j, advectX, advectY);	
 	//printf("pressure at [%d][%d][%d]: %f\n", k, i, j, grid[k][i*size+j].p);
@@ -1031,12 +1053,16 @@ void runStep() {
 	//oldRoot->computeVelocityDivergence();
 	
 	// advect velocity, copy old stuff
-	//printf("advecting velocity\n");
+	printf("advecting velocity\n");
 	advectAndCopy(root, oldRoot);
+	
+	printf("computing divV\n");
 
 	// grid's vx and vy are now provisional velocity
 	// compute velocity divergence of new grid to use in residual calcuation
 	root->computeVelocityDivergence();
+
+	printf("starting poisson solver\n");
 
 	// compute all residuals, so that the whole bottom multilevel is computed
 	doneVCycle = true;
@@ -1081,9 +1107,12 @@ void runStep() {
 
 		//printf("end v cycle\n");
 	}
+	printf("end poisson solver\n");
 	
+
+	printf ("doing adaptivity\n");
     // given new state, do adaptivity
-    //recursiveAdaptivity(root);
+    recursiveAdaptivity(root);
 
 	project(root);
 
@@ -1134,12 +1163,12 @@ void runStep() {
 
 void initNodeLeftUniform(qNode* node) {
 	int size = 1<<node->level;
-	node->p = 1.0 / size / size;
+	node->p = 1.0/size/size;
 	node->vx = 0.0;
 	node->vy = 0.0;
 	node->phi = 0.0;
 	if (node->i == size/2 || node->i == size/2-1) {
-		node->vx = -1;
+		node->vx = -0.1;
 	}
 	
 }
