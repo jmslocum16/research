@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <ctime>
 #include <cmath>
+#include <random>
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
@@ -65,7 +66,18 @@ bool drawCells;
 bool screenshot;
 int numToRun = 0;
 
-double dt = .02;
+// options for particle rendering
+enum ParticleAlgorithm { EULER, NONE };
+ParticleAlgorithm particleAlgorithm = NONE;
+
+struct Particle {
+	double x, y;
+};
+
+int numParticles;
+Particle* particles;
+
+double dt = .04;
 
 // drawing stuff
 double minP;
@@ -516,7 +528,7 @@ void drawMultilevel(qNode* node, int ml) {
 
 		glRectf(x, y, x + 2.0/size, y + 2.0/size);
 
-		if (drawVelocity && node->level <= 5) { // if size is > 40 this is pretty useless
+		if (drawVelocity && node->level <= 8) {
 			if (maxMag >= eps) {
 				glColor3f(0.0, 1.0, 0.0);
 				double vx = node->vx;
@@ -533,7 +545,7 @@ void drawMultilevel(qNode* node, int ml) {
 			}
 		}
 		// draw cell
-		if (drawCells && node->level <= 5) {
+		if (drawCells && node->level <= 8) {
 			glColor3f(1.0, 1.0, 1.0);
 			glBegin(GL_LINE_LOOP);
 			glVertex2f(x, y);
@@ -567,6 +579,18 @@ void computeMax(qNode* node, int ml) {
 	}
 }
 
+void drawParticles() {
+	glEnable (GL_BLEND);
+	glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	glColor4f(0.0, 1.0, 0.0, 0.5);
+	glPointSize(10);
+	glBegin(GL_POINTS);
+	for (int i = 0; i < numParticles; i++) {
+		glVertex2f(-1.0 + 2*particles[i].x, -1.0 + 2*particles[i].y);
+	}
+	glEnd();
+}
+
 /* Handler for window-repaint event. Call back when the window first appears and
    whenever the window needs to be re-painted. */
 void display() {
@@ -574,14 +598,17 @@ void display() {
 
 	printf("display\n");
 
-	minP = 100000000.0;
-	maxP = -100000000.0;
-	maxMag = 0.0;
+    if (particleAlgorithm == NONE) {
+		minP = 100000000.0;
+		maxP = -100000000.0;
+		maxMag = 0.0;
 
-	computeMax(root, levelToDisplay);
+		computeMax(root, levelToDisplay);
 
-	drawMultilevel(root, levelToDisplay);
-
+		drawMultilevel(root, levelToDisplay);
+    } else {
+		drawParticles();
+	}
 	
 	glFlush();  // Render now
 
@@ -1030,7 +1057,20 @@ void clampVelocity(qNode* node) {
 			clampVelocity(node->children[k]);
 		}	
 	}
+}
 
+void eulerAdvectParticle(Particle& p, std::pair<double, double> v) {
+	p.x += v.first * dt;
+	p.y += v.second * dt;
+}
+
+void advectParticles() {
+	for (int i = 0; i < numParticles; i++) {
+		std::pair<double, double> vGrad = getLeaf(root, particles[i].x, particles[i].y)->getVelocityAt(particles[i].x, particles[i].y);
+		if (particleAlgorithm == EULER) {
+			eulerAdvectParticle(particles[i], vGrad);
+		}
+	}	
 }
 
 void runStep() {
@@ -1112,12 +1152,16 @@ void runStep() {
 
 	printf ("doing adaptivity\n");
     // given new state, do adaptivity
-    recursiveAdaptivity(root);
+    //recursiveAdaptivity(root);
 
 	project(root);
 
 	clampVelocity(root);
 
+
+	if (particleAlgorithm != NONE) {
+		advectParticles();
+	}
 	//printf("advecting phi\n");
 	// dphi/dt + v dot grad(phi) = 0
 	// dphi/dt = -v dot grad(phi)
@@ -1168,7 +1212,7 @@ void initNodeLeftUniform(qNode* node) {
 	node->vy = 0.0;
 	node->phi = 0.0;
 	if (node->i == size/2 || node->i == size/2-1) {
-		node->vx = -0.1;
+		node->vx = -1.0;
 	}
 	
 }
@@ -1215,6 +1259,19 @@ void initSim() {
 
 	clampVelocity(root);
 
+    int size = 1<<levelToDisplay;
+	double h = 1.0/size;
+	std::default_random_engine generator;
+	std::uniform_real_distribution<double> distribution(0.5-2*h, 0.5+2*h);
+	//double dice_roll = distribution(generator);
+	if (particleAlgorithm != NONE) {
+		particles = new Particle[numParticles];
+        for (int i = 0; i < numParticles; i++) {
+			particles[i].x = distribution(generator);
+			particles[i].y = distribution(generator);
+		}
+	}
+
 	// TODO MAKE MULTILEVEL
 }
 
@@ -1256,6 +1313,7 @@ int main(int argc, char** argv) {
 	water = false;
 	drawCells = false;
 	screenshot = false;
+	particleAlgorithm = NONE;
 	for (int i = 1; i < argc; i++) {
 		char* arg = argv[i];
 		if (!strcmp("--headless", arg)) {
@@ -1273,14 +1331,21 @@ int main(int argc, char** argv) {
 			drawCells = true;
 		} else if (!strcmp("-run", arg)) {
             numToRun = atoi(argv[++i]);
-        }
+        } else if (!strcmp("-particles", arg)) {
+			char* alg = argv[++i];
+            numParticles = atoi(argv[++i]);
+			if (!strcmp("euler", alg)) {
+				particleAlgorithm = EULER;
+			} else {
+				printf("invalid particle algorithm %s\n", alg);
+				particleAlgorithm = NONE;
+				numParticles = 0;
+			}
+		}
 	}
 	//levelToDisplay = levels/2;
     levelToDisplay = levels - 1;
 	printf("headless: %d, levels: %d\n", headless, levels);
-
-	// seed random
-	srandom(time(NULL));
 
 	// run tests
 	//testNeighbors();
