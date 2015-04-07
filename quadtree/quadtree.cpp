@@ -67,8 +67,8 @@ bool screenshot;
 int numToRun = 0;
 
 // options for particle rendering
-enum ParticleAlgorithm { EULER, NONE };
-ParticleAlgorithm particleAlgorithm = NONE;
+enum ParticleAlgorithm { EULER, PARTICLENONE };
+ParticleAlgorithm particleAlgorithm = PARTICLENONE;
 
 struct Particle {
 	double x, y;
@@ -80,7 +80,8 @@ Particle* particles;
 // start state stuff
 enum StartState { LEFT, SINK, SRCSINK, POISSONTEST, ADAPTTEST };
 StartState startState;
-
+enum AdaptScheme { ADAPTNONE, CURL, PGRAD };
+AdaptScheme adaptScheme = ADAPTNONE;
 
 double dt = .04;
 
@@ -107,7 +108,7 @@ class qNode {
 	public:
 		// tree stuffs
 		int id;
-		bool leaf;
+		bool leaf, shouldExpand, shouldContract;
 		qNode* parent;
 		qNode* children[4]; // 2D array in 1D array
 		qNode* neighbors[4];
@@ -603,7 +604,7 @@ void display() {
 
 	printf("display\n");
 
-    if (particleAlgorithm == NONE) {
+    if (particleAlgorithm == PARTICLENONE) {
 		minP = 100000000.0;
 		maxP = -100000000.0;
 		maxMag = 0.0;
@@ -930,7 +931,7 @@ void relax(int d, int r) {
 
 // returns true if leaf should be expanded, false if it should not
 
-double curlThresh = .1;
+double curlThresh = 0.05;
 double curlAdaptFunction(qNode* node) {
 	double curl = node->getCurl();
 	return fabs(curl) > curlThresh / (1<<node->level);
@@ -943,15 +944,21 @@ bool pGradAdaptFunction(qNode* node) {
 }
 
 bool adaptFunction(qNode* node) {
-    //return pGradAdaptFunction(node);
-	return curlAdaptFunction(node);
+	assert(adaptScheme != ADAPTNONE);
+	if (adaptScheme == PGRAD) {
+    	return pGradAdaptFunction(node);
+	} else { // CURL
+		return curlAdaptFunction(node);
+	}
 }
 
 void recursiveAdaptivity(qNode* node) {
+	node->shouldContract = false;
+	node->shouldExpand = false;
     if (node->leaf) {
         // see if should node cell
         if (adaptFunction(node)) {
-            node->expand();
+			node->shouldExpand = true;
         }
         return;
     }
@@ -962,16 +969,28 @@ void recursiveAdaptivity(qNode* node) {
             break;
         }
     }
-    if (allChildrenLeaves) {
-        if (!adaptFunction(node)) {
-            // this wouldn't be expanded if it was a leaf, so it shouldn't have leaf children
-            node->contract();
-        }
+    if (allChildrenLeaves && !adaptFunction(node)) {
+        // this wouldn't be expanded if it was a leaf, so it shouldn't have leaf children
+		node->shouldContract = true;
     } else {
         for (int k = 0; k < 4; k++) {
             recursiveAdaptivity(node->children[k]);
         }
     }
+}
+
+void recursiveExpandContract(qNode* node) {
+	if (node->shouldContract) {
+		node->contract();
+	} else if (node->shouldExpand) {
+		node->expand();
+	} else if (!node->leaf) {
+		for (int k = 0; k < 4; k++) {
+			recursiveExpandContract(node->children[k]);
+		}
+	}
+	node->shouldExpand = false;
+	node->shouldContract = false;
 }
 
 void advectAndCopy(qNode* node, qNode* oldNode) {
@@ -1157,14 +1176,17 @@ void runStep() {
 
 	printf ("doing adaptivity\n");
     // given new state, do adaptivity
-    //recursiveAdaptivity(root);
+	if (adaptScheme != ADAPTNONE) {
+    	recursiveAdaptivity(root);
+		recursiveExpandContract(root);
+	}
 
 	project(root);
 
 	clampVelocity(root);
 
 
-	if (particleAlgorithm != NONE) {
+	if (particleAlgorithm != PARTICLENONE) {
 		advectParticles();
 	}
 	//printf("advecting phi\n");
@@ -1244,7 +1266,7 @@ void initNodeSrcSink(qNode* node) {
 
 	double vxsrc = (node->j + 0.5)/size - src;
 	double vysrc = (node->i + 0.5)/size - src;
-	double lensrc = sqrt(vxsrc * vxsrc + vysrc + vysrc);
+	double lensrc = sqrt(vxsrc * vxsrc + vysrc * vysrc);
 
 	double vxsink = sink - (node->j + 0.5)/size;
 	double vysink = sink - (node->i + 0.5)/size;
@@ -1311,7 +1333,7 @@ void initSim() {
 
 	clampVelocity(root);
 
-	if (particleAlgorithm != NONE) {
+	if (particleAlgorithm != PARTICLENONE) {
 
 		particles = new Particle[numParticles];
 		std::default_random_engine generator;
@@ -1375,7 +1397,8 @@ int main(int argc, char** argv) {
 	water = false;
 	drawCells = false;
 	screenshot = false;
-	particleAlgorithm = NONE;
+	particleAlgorithm = PARTICLENONE;
+	adaptScheme = ADAPTNONE;
 	startState = LEFT;
 	for (int i = 1; i < argc; i++) {
 		char* arg = argv[i];
@@ -1383,6 +1406,15 @@ int main(int argc, char** argv) {
 			headless = true;
 		} else if (!strcmp("-levels", arg)) {
 			levels= atoi(argv[++i]);
+		} else if (!strcmp("-adapt", arg)) {
+			char* scheme = argv[++i];
+			if (!strcmp("curl", scheme)) {
+				adaptScheme = CURL;
+			} else if (!strcmp("pgrad", scheme)) {
+				adaptScheme = PGRAD;
+			} else {
+				printf("invalid adapt scheme %s\n", scheme);
+			}
 		} else if (!strcmp("--water", arg)) {
 			water = true;
 		} else if (!strcmp("--vel", arg)) {
@@ -1401,7 +1433,7 @@ int main(int argc, char** argv) {
 				particleAlgorithm = EULER;
 			} else {
 				printf("invalid particle algorithm %s\n", alg);
-				particleAlgorithm = NONE;
+				particleAlgorithm = PARTICLENONE;
 				numParticles = 0;
 			}
 		// start states
@@ -1435,7 +1467,7 @@ int main(int argc, char** argv) {
 	// TODO don't do if headless
 	glutInitWindowSize(windowWidth, windowHeight);   // Set the window's initial width & height
 	glutInitWindowPosition(50, 50);
-	windowid = glutCreateWindow("MultiGrid");  // Create window with the given title
+	windowid = glutCreateWindow("Quad Tree");  // Create window with the given title
 	glutDisplayFunc(display);       // Register callback handler for window re-paint event
 	glutKeyboardFunc(keyboard);
 	initGL();                       // Our own OpenGL initialization
