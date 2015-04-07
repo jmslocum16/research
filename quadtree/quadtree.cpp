@@ -77,6 +77,11 @@ struct Particle {
 int numParticles;
 Particle* particles;
 
+// start state stuff
+enum StartState { LEFT, SINK, SRCSINK, POISSONTEST, ADAPTTEST };
+StartState startState;
+
+
 double dt = .04;
 
 // drawing stuff
@@ -379,7 +384,7 @@ class qNode {
 		// adaptivity
 		void expand() {
 			assert(leaf);
-    		printf("expanding cell %d, (%d, %d)\n", level, i, j);
+    		//printf("expanding cell %d, (%d, %d)\n", level, i, j);
     		int size = 1<<level;
     		// std::pair<double, double> levelSetGrad;
     		for (int k = 0; k < 4; k++) {
@@ -405,7 +410,7 @@ class qNode {
 			for (int k = 0; k < 4; k++) {
 				assert(children[k]->leaf);
 			}
-		    printf("contracting cell %d (%d, %d)\n", level, i, j);
+		    //printf("contracting cell %d (%d, %d)\n", level, i, j);
 			// average child values and set used/leaf
 		    int size = 1<<level;
 			p = 0.0;
@@ -1213,13 +1218,51 @@ void initNodeLeftUniform(qNode* node) {
 	node->phi = 0.0;
 	if (node->i == size/2 || node->i == size/2-1) {
 		node->vx = -1.0;
-	}
+	}	
+}
+
+void initNodeSink(qNode* node) {
+	int size = 1<<node->level;
+	node->p = 1.0/size/size;
+	node->phi = 0.0;
+
+	double center = 0.5;
+	node->vx = center - (node->j + 0.5)/size;
+	node->vy = center - (node->i + 0.5)/size;
+	double len = sqrt(node->vx * node->vx + node->vy * node->vy);
+	node->vx /= len;
+	node->vy /= len;
+}
+
+void initNodeSrcSink(qNode* node) {
+	int size = 1<<node->level;
+	node->p = 1.0/size/size;
+	node->phi = 0.0;
 	
+	double src = .125;
+	double sink = .875;
+
+	double vxsrc = (node->j + 0.5)/size - src;
+	double vysrc = (node->i + 0.5)/size - src;
+	double lensrc = sqrt(vxsrc * vxsrc + vysrc + vysrc);
+
+	double vxsink = sink - (node->j + 0.5)/size;
+	double vysink = sink - (node->i + 0.5)/size;
+	double lensink = sqrt(vxsink * vxsink + vysink * vysink);
+	
+	node->vx = vxsrc/lensrc + vxsink/lensink;
+	node->vy = vysrc/lensrc + vysink/lensink;
 }
 
 void initNodeFunction(qNode* node) {
-	initNodeLeftUniform(node);
-	// TODO
+	if (startState == LEFT)
+		initNodeLeftUniform(node);
+	else if (startState == SINK)
+		initNodeSink(node);
+	else if (startState == SRCSINK)
+		initNodeSrcSink(node);
+	else
+		printf("invalid start state\n");
 }
 
 // inits leaves according to test and averages non-leaves
@@ -1252,6 +1295,15 @@ void initRecursive(qNode* node, int d) {
 // TODO add different possible starting states
 void initSim() {
 	printf("init sim\n");
+
+	/*if (startState == POISSONTEST) {
+		runPoissonTest();
+		return;
+	} else if (startState == ADAPTTEST) {
+		runAdaptTest();
+		return;
+	}*/
+
 	root = new qNode(NULL, 0, 0);
 	oldRoot = new qNode(NULL, 0, 0);
 
@@ -1259,16 +1311,26 @@ void initSim() {
 
 	clampVelocity(root);
 
-    int size = 1<<levelToDisplay;
-	double h = 1.0/size;
-	std::default_random_engine generator;
-	std::uniform_real_distribution<double> distribution(0.5-2*h, 0.5+2*h);
-	//double dice_roll = distribution(generator);
 	if (particleAlgorithm != NONE) {
+
 		particles = new Particle[numParticles];
-        for (int i = 0; i < numParticles; i++) {
-			particles[i].x = distribution(generator);
-			particles[i].y = distribution(generator);
+		std::default_random_engine generator;
+		double distmin = 0.0;
+		double distmax = 1.0;
+
+		if (startState == LEFT) {
+    		int size = 1<<levelToDisplay;
+			double h = 1.0 / size;
+			distmin = 0.5 - 2 * h;
+			distmax = 0.5 + 2 * h;
+		}
+
+		std::uniform_real_distribution<double> distribution(distmin, distmax);
+
+		for (int i = 0; i < numParticles; i++) {
+
+				particles[i].x = distribution(generator);
+				particles[i].y = distribution(generator);
 		}
 	}
 
@@ -1314,6 +1376,7 @@ int main(int argc, char** argv) {
 	drawCells = false;
 	screenshot = false;
 	particleAlgorithm = NONE;
+	startState = LEFT;
 	for (int i = 1; i < argc; i++) {
 		char* arg = argv[i];
 		if (!strcmp("--headless", arg)) {
@@ -1341,6 +1404,17 @@ int main(int argc, char** argv) {
 				particleAlgorithm = NONE;
 				numParticles = 0;
 			}
+		// start states
+		} else if (!strcmp("left", arg)) {
+			startState = LEFT;
+		} else if (!strcmp("sink", arg)) {
+			startState = SINK;
+		} else if (!strcmp("srcsink", arg)) {
+			startState = SRCSINK;
+		} else if (!strcmp("poissontest", arg)) {
+			startState = POISSONTEST;
+		} else if (!strcmp("adapttest", arg)) {
+			startState = ADAPTTEST;
 		}
 	}
 	//levelToDisplay = levels/2;
