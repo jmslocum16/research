@@ -240,12 +240,12 @@ class qNode {
 		}
 
 		// utility functions
-		std::pair<double, double> getPressureGradient(int targetLevel) {
+		std::pair<double, double> getPressureGradient() {
 			int size = 1<<level;
-			double vals[4];	
+			double vals[4];
 			int sizes[4];
 			for (int k = 0; k < 4; k++) {
-				int ml = targetLevel;
+				int ml = leaf ? levels - 1 : level; // multilevel if leaf otherwise regular level
 				std::pair<qNode*, qNode*> neighbor = getNeighborInDir(k, &ml);
 				
 				if (neighbor.second == NULL) {
@@ -260,14 +260,14 @@ class qNode {
 		}
 		
 		// TODO
-		/*std::pair<double, double> getLevelSetGradient(int targetLevel) {}*/
+		/*std::pair<double, double> getLevelSetGradient() {}*/
 		
-		std::pair<double, double> getVelocityGradient(int targetLevel) {
+		std::pair<double, double> getVelocityGradient() {
 		    double vals[4];
 			int sizes[4];
 		
 			for (int k = 0; k < 4; k++) {
-				int ml = targetLevel;
+				int ml = leaf ? levels - 1 : level;
 				std::pair<qNode*, qNode*> neighbor = getNeighborInDir(k, &ml);
 				if (neighbor.second == NULL) {
 				vals[k] = (k < 2) ? neighbor.first->vy : neighbor.first->vx;
@@ -284,12 +284,12 @@ class qNode {
 			return getGradient(vals, sizes, 1<<level);
 		}
 		
-		std::pair<double, double> getVelocitySingleGradient(int targetLevel, bool x) {
+		std::pair<double, double> getVelocitySingleGradient(bool x) {
 		    double vals[4];	
 			int sizes[4];
 		
 			for (int k = 0; k < 4; k++) {
-				int ml = targetLevel;
+				int ml = leaf ? levels - 1 : level;
 				std::pair<qNode*, qNode*> neighbor = getNeighborInDir(k, &ml);
 				if (neighbor.second == NULL) {
 					vals[k] = x ? neighbor.first->vx : neighbor.first->vy;
@@ -306,12 +306,12 @@ class qNode {
 			return getGradient(vals, sizes, 1<<level);
 		}
 
-		std::pair<double, double> getVelocityProductGradient(int targetLevel) {
+		std::pair<double, double> getVelocityProductGradient() {
 			 double vals[4];	
 			int sizes[4];
 		
 			for (int k = 0; k < 4; k++) {
-				int ml = targetLevel;
+				int ml = leaf ? levels - 1 : level;
 				std::pair<qNode*, qNode*> neighbor = getNeighborInDir(k, &ml);
 				if (neighbor.second == NULL) {
 					vals[k] = neighbor.first->vx * neighbor.first->vy;
@@ -328,13 +328,13 @@ class qNode {
 		
 		// curl(F) = d(Fy)/dx - d(Fx)/dy
 		double getCurl() {
-			std::pair<double, double> xgrad = getVelocitySingleGradient(levels - 1, true);
-			std::pair<double, double> ygrad = getVelocitySingleGradient(levels - 1, false);
+			std::pair<double, double> xgrad = getVelocitySingleGradient(true);
+			std::pair<double, double> ygrad = getVelocitySingleGradient(false);
 			return ygrad.first - xgrad.second;
 		}
 		
 		void computeVelocityDivergence() {
-			std::pair<double, double> grad = getVelocityGradient(levels - 1);
+			std::pair<double, double> grad = getVelocityGradient();
 			divV = grad.first + grad.second;
 			if (!leaf) {
 				for (int k = 0; k < 4; k++) {
@@ -344,8 +344,8 @@ class qNode {
 		}
 
 		std::pair<double, double> getVelocityAt(double x, double y) {
-    		std::pair<double, double> xGrad = getVelocitySingleGradient(levels - 1, true);
-			std::pair<double, double> yGrad = getVelocitySingleGradient(levels - 1, false);
+    		std::pair<double, double> xGrad = getVelocitySingleGradient(true);
+			std::pair<double, double> yGrad = getVelocitySingleGradient(false);
 			int size = 1<<level;
 			double dx = x - (j + 0.5)/size;
 			dx = std::max(-0.5, std::min(dx, 0.5));
@@ -357,7 +357,7 @@ class qNode {
 		}
 		
 		double getPressureAt(double x, double y) {
-    		std::pair<double, double> pGrad = getPressureGradient(levels - 1);
+    		std::pair<double, double> pGrad = getPressureGradient();
 			int size = 1<<level;
 			double dx = x - (j + 0.5)/size;
 			double dy = y - (i + 0.5)/size;
@@ -906,7 +906,7 @@ double curlAdaptFunction(qNode* node) {
 
 double pressureThresh = .01;
 bool pGradAdaptFunction(qNode* node) {
-    std::pair<double, double> pgrad = node->getPressureGradient(levels - 1);
+    std::pair<double, double> pgrad = node->getPressureGradient();
     return fabs(pgrad.first + pgrad.second) > pressureThresh/(1<<node->level);
 }
 
@@ -967,8 +967,8 @@ void advectAndCopy(qNode* node, qNode* oldNode) {
 	double y = (node->i + 0.5)/size;
 	qNode* last= getSemiLagrangianLookback(oldNode, &x, &y, 1);
 	//printf("lookback from node %d (%d, %d) gives %d (%d, %d)", node->level, node->i, node->j, last->level, last->i, last->j);
-	std::pair<double, double> vGrad = last->getVelocityGradient(levels - 1);
-	std::pair<double, double> vProductGrad = last->getVelocityProductGradient(levels - 1);
+	std::pair<double, double> vGrad = last->getVelocityGradient();
+	std::pair<double, double> vProductGrad = last->getVelocityProductGradient();
 	std::pair<double, double> velInterp = last->getVelocityAt(x, y);
 
 	double advectX = 2 * velInterp.first * vGrad.first + vProductGrad.second;
@@ -1003,7 +1003,7 @@ void correctPressure(qNode* node) {
 
 void project(qNode* node) {
 	// correct velocity with updated pressure field to make non-divergent
-	std::pair<double, double> grad = node->getPressureGradient(levels - 1);
+	std::pair<double, double> grad = node->getPressureGradient();
 	//node->vx -= grad.first * dt;
 	//node->vy -= grad.second * dt;
 	node->vx -= grad.first;
