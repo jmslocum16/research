@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <ctime>
 #include <cmath>
+#define _USE_MATH_DEFINES
+#include <math.h>
 #include <random>
 #include <stdio.h>
 #include <string.h>
@@ -792,7 +794,8 @@ void testNeighbors() {
 
 // poisson solver functions
 
-void computeResidual(qNode* node) {
+// returns max(abs(R))
+double computeResidual(qNode* node) {
 	int size = 1<<node->level;
 	if (node->leaf) { // if leaf cell, compute residual
 		// compute it: R = div(vx, vy) - 1/(ha)*sum of (s * grad) for each face
@@ -814,7 +817,7 @@ void computeResidual(qNode* node) {
 		double R = node->divV - flux;
 		
 		node->R = R;
-		//printf("at [%d][%d], divV: %f, flux: %f, R: %f\n", i, j, grid[d][i*size+j].divV, flux, R);
+		//printf("at [%d][%d], divV: %f, flux: %f, R: %f\n", node->i, node->j, node->divV, flux, R);
 		// if a*R > e, not done
 		if (fabs(R) > eps) {
 			doneVCycle = false;
@@ -822,13 +825,16 @@ void computeResidual(qNode* node) {
 		} else {
 			//printf("done with this cell already, %f is smaller than epsilon of %f\n", fabs(grid[d][i*size+j].R), eps);
 		}
+		return fabs(R);
 	} else {
+		double maxR = 0.0;
         node->R = 0.0;
 		for (int k = 0; k < 4; k++) {
-			computeResidual(node->children[k]);
+			maxR = std::max(maxR, computeResidual(node->children[k]));
 			node->R += node->children[k]->R;
 		}
 		node->R /= 4.0;
+		return maxR;
 	}
 }
 
@@ -906,7 +912,7 @@ void relax(int d, int r) {
 
 	bool done = false;
     int totalCycles = 0;
-	while (r-- > 0 && !done) {
+	while (r-- > 0/* && !done*/) {
         totalCycles++;
 		done = relaxRecursive(root, d);
 		recursiveUpdate(root, d);
@@ -952,15 +958,17 @@ bool adaptFunction(qNode* node) {
 	}
 }
 
-void recursiveAdaptivity(qNode* node) {
+// returns true if any nodes were changed, false otherwise
+bool recursiveAdaptivity(qNode* node) {
 	node->shouldContract = false;
 	node->shouldExpand = false;
     if (node->leaf) {
         // see if should node cell
         if (adaptFunction(node)) {
 			node->shouldExpand = true;
+			return true;
         }
-        return;
+        return false;
     }
     bool allChildrenLeaves = true;
     for (int k = 0; k < 4; k++) {
@@ -972,10 +980,13 @@ void recursiveAdaptivity(qNode* node) {
     if (allChildrenLeaves && !adaptFunction(node)) {
         // this wouldn't be expanded if it was a leaf, so it shouldn't have leaf children
 		node->shouldContract = true;
+		return true;
     } else {
+		bool anyChanged = true;
         for (int k = 0; k < 4; k++) {
-            recursiveAdaptivity(node->children[k]);
+            anyChanged &= recursiveAdaptivity(node->children[k]);
         }
+		return anyChanged;
     }
 }
 
@@ -1044,8 +1055,10 @@ void advectAndCopy(qNode* node, qNode* oldNode) {
 }
 
 void correctPressure(qNode* node) {
-	node->p += node->dp;
-	if (!node->leaf) {
+	if (node->leaf) {
+		//printf("at node %d (%d, %d) correcting pressure %f by %f\n", node->level, node->i, node->j, node->p, node->dp);
+		node->p += node->dp;
+	} else {
 		for (int k = 0; k < 4; k++) {
 			correctPressure(node->children[k]);
 		}
@@ -1097,6 +1110,41 @@ void advectParticles() {
 	}	
 }
 
+double runVCycle() {
+	//relax(0, MAX_RELAX_COUNT);
+	root->dp = 0;
+	// do not relax level 0 since it makes no sense to do so...
+
+	for (int d = 1; d < levels; d++) {
+		relax(d, (d==1) ? MAX_RELAX_COUNT : OPTIMIZED_RELAX_COUNT);
+	}
+
+	//printf("correcting pressure\n");
+	// use corrections to improve pressure
+	correctPressure(root);
+
+	// TODO REMOVE
+	/*printf("printing pressure after corrections\n");
+	for (int i = 0; i < size; i++) {
+		for (int j = 0; j < size; j++) {
+			printf("pressure at [%d][%d][%d]: %f\n", k, i, j, grid[k][i*size+j].p);
+		}
+	}
+	*/
+
+	
+	// re-compute residual
+	doneVCycle = true;
+	return computeResidual(root);
+
+	// TODO REMOVE
+	// doneVCycle = true;
+	//if (numCycles == 1) break;
+
+	//printf("end v cycle\n");
+
+}
+
 void runStep() {
 	printf("running step\n");
 	/*for (int d = 0; d < levels; d++) {
@@ -1138,40 +1186,9 @@ void runStep() {
 		numCycles++;
 		//printf("start v cycle %d\n", numCycles);
 
-		
-		//relax(0, MAX_RELAX_COUNT);
-		root->dp = 0;
-		// do not relax level 0 since it makes no sense to do so...
-
-		for (int d = 1; d < levels; d++) {
-			relax(d, (d==1) ? MAX_RELAX_COUNT : OPTIMIZED_RELAX_COUNT);
-		}
-
-		//printf("correcting pressure\n");
-		// use corrections to improve pressure
-		correctPressure(root);
-
-		// TODO REMOVE
-		/*printf("printing pressure after corrections\n");
-		for (int i = 0; i < size; i++) {
-			for (int j = 0; j < size; j++) {
-				printf("pressure at [%d][%d][%d]: %f\n", k, i, j, grid[k][i*size+j].p);
-			}
-		}
-		*/
-
-		
-		// re-compute residual
-		doneVCycle = true;
-		computeResidual(root);
-
-		// TODO REMOVE
-		// doneVCycle = true;
-		//if (numCycles == 1) break;
-
-		//printf("end v cycle\n");
+		runVCycle();	
 	}
-	printf("end poisson solver\n");
+	printf("end poisson solver, took %d cycles\n", numCycles);
 	
 
 	printf ("doing adaptivity\n");
@@ -1276,6 +1293,22 @@ void initNodeSrcSink(qNode* node) {
 	node->vy = vysrc/lensrc + vysink/lensink;
 }
 
+void initPoissonTest(qNode* node) {
+	
+	node->phi = 0;
+	node->vx = 0;
+	node->vy = 0;
+	
+	int size = 1<<node->level;
+	double x = (node->j + 0.5)/size;
+	double y = (node->i + 0.5)/size;
+
+	node->p = 0;
+	
+	//node->p = (.5-x)*(.5-x) + (.5-y)*(.5-y); // use pressure gradient split to make multilevel
+	
+}
+
 void initNodeFunction(qNode* node) {
 	if (startState == LEFT)
 		initNodeLeftUniform(node);
@@ -1283,6 +1316,8 @@ void initNodeFunction(qNode* node) {
 		initNodeSink(node);
 	else if (startState == SRCSINK)
 		initNodeSrcSink(node);
+	else if (startState == POISSONTEST)
+		initPoissonTest(node);
 	else
 		printf("invalid start state\n");
 }
@@ -1314,22 +1349,82 @@ void initRecursive(qNode* node, int d) {
 	}
 }
 
+void poissonResetPressure(qNode* node) {
+	node->p = 0;
+	if (node->leaf) {
+		int size = 1<<node->level;
+		double x = (node->j + 0.5)/size;
+		double y = (node->i + 0.5)/size;
+		node->divV = 6*x*y*y + 2*x*x*x;
+	} else {
+		node->divV = 0;
+		for (int k = 0; k < 4; k++) {
+			poissonResetPressure(node->children[k]);
+		}
+	}
+}
+
+void computePoissonError(qNode* node, double *total, double *count) {
+	if (node->leaf) {
+		int size = 1<<node->level;
+		double x = (node->j + 0.5)/size;
+		double y = (node->i + 0.5)/size;
+		double correct = x*x*x*y*y;
+		*total += fabs(node->p - correct);
+		*count += 1;
+	} else {
+		for (int k = 0; k < 4; k++) {
+			computePoissonError(node->children[k], total, count);
+		}
+	}
+}
+
+void runPoissonTest() {
+	// adapt if needed
+	//while (recursiveAdapt(root));
+
+	// set all pressure to 0 again
+	poissonResetPressure(root);
+	
+	double initialResidual = computeResidual(root);
+	printf("initial residual: %f\n", initialResidual);
+	
+	// run V cycles, compute stuff
+	int i = 0;
+	while (!doneVCycle) {
+		i++;
+		printf("residual after %d vcycles: %f\n", i, runVCycle());
+		double total = 0;
+		double count = 0;
+		computePoissonError(root, &total, &count);
+		double avgError = total / count;
+		printf("average error after %d vcycles: %f\n", i, avgError);
+
+		if (i == 1) break;
+	}
+	
+}
+
 // TODO add different possible starting states
 void initSim() {
 	printf("init sim\n");
 
-	/*if (startState == POISSONTEST) {
-		runPoissonTest();
-		return;
-	} else if (startState == ADAPTTEST) {
-		runAdaptTest();
-		return;
-	}*/
-
 	root = new qNode(NULL, 0, 0);
 	oldRoot = new qNode(NULL, 0, 0);
 
-	initRecursive(root, levels - 2);
+	int startLevel = levels - 2;
+	if (startState == POISSONTEST) {
+		startLevel = levels - 1;
+	}
+
+	initRecursive(root, startLevel);
+	if (startState == POISSONTEST) {
+		runPoissonTest();
+		return;
+	} else if (startState == ADAPTTEST) {
+		//runAdaptTest();
+		return;
+	}
 
 	clampVelocity(root);
 
