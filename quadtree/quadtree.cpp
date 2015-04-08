@@ -458,8 +458,8 @@ qNode* get(qNode* node, int d, int i, int j) {
 	return get(node->children[newi*2+newj], d, i, j);
 }
 
-qNode* getLeaf(qNode* node, double x, double y) {
-	if (node->leaf) {
+qNode* getLeaf(qNode* node, double x, double y, int ml) {
+	if (node->leaf || node->level == ml) {
 		return node;
 	}
 	int size = 1<<node->level;
@@ -467,16 +467,16 @@ qNode* getLeaf(qNode* node, double x, double y) {
 	double midy = ((double)node->i)/size + 0.5/size;
 	int newj = x < midx ? 0 : 1;
 	int newi = y < midy ? 0 : 1;
-	return getLeaf(node->children[2*newi + newj], x, y);
+	return getLeaf(node->children[2*newi + newj], x, y, ml);
 }
 
-qNode*  getSemiLagrangianLookback(qNode* r, double* x, double* y, int steps) {
+qNode*  getSemiLagrangianLookback(qNode* r, double* x, double* y, int steps, int ml) {
 	double newdt = dt / steps;
-	qNode* cur = getLeaf(r, *x, *y);
+	qNode* cur = getLeaf(r, *x, *y, ml);
 	while (steps--) {
 		*x -= cur->vx * newdt;
 		*y -= cur->vy * newdt;
-		cur = getLeaf(r, *x, *y);
+		cur = getLeaf(r, *x, *y, ml);
 	}
 	return cur;
 }
@@ -1016,7 +1016,7 @@ void advectAndCopy(qNode* node, qNode* oldNode) {
 	int size = 1<<node->level;
 	double x = (node->j + 0.5)/size;
 	double y = (node->i + 0.5)/size;
-	qNode* last= getSemiLagrangianLookback(oldNode, &x, &y, 1);
+	qNode* last= getSemiLagrangianLookback(oldNode, &x, &y, 1, node->level);
 	//printf("lookback from node %d (%d, %d) gives %d (%d, %d)", node->level, node->i, node->j, last->level, last->i, last->j);
 	std::pair<double, double> vGrad = last->getVelocityGradient();
 	std::pair<double, double> vProductGrad = last->getVelocityProductGradient();
@@ -1090,7 +1090,7 @@ void eulerAdvectParticle(Particle& p, std::pair<double, double> v) {
 
 void advectParticles() {
 	for (int i = 0; i < numParticles; i++) {
-		std::pair<double, double> vGrad = getLeaf(root, particles[i].x, particles[i].y)->getVelocityAt(particles[i].x, particles[i].y);
+		std::pair<double, double> vGrad = getLeaf(root, particles[i].x, particles[i].y, levels-1)->getVelocityAt(particles[i].x, particles[i].y);
 		if (particleAlgorithm == EULER) {
 			eulerAdvectParticle(particles[i], vGrad);
 		}
