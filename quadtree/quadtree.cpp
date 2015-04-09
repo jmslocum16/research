@@ -18,11 +18,6 @@
 #include <string.h>
 #include <sys/time.h>
 
-// profiling
-int numLeaves, numNodes;
-int* leafLevels;
-long frameMS = 0;
-
 // convergence stuff
 
 bool doneVCycle = false;
@@ -67,6 +62,41 @@ bool drawVelocity;
 bool drawCells;
 bool screenshot;
 int numToRun = 0;
+
+// profiling
+int numLeaves, numNodes;
+int* leafLevels;
+timeval start, end;
+
+
+void resetProfiling() {
+	if (leafLevels) delete leafLevels;
+	leafLevels = new int[levels];
+	memset(leafLevels, 0, levels * sizeof(int));
+	numNodes = 0;
+	numLeaves = 0;
+}
+
+void printProfiling() {
+	printf("number of leaves at each level: \n");
+	for (int i = 0; i < levels; i++) {
+		printf("%d: %d\n", i, leafLevels[i]);
+	}
+	printf("total number of nodes: %d\n", numNodes);
+	printf("total number of leaves: %d\n", numLeaves);
+}
+
+void startTime() {
+	gettimeofday(&start, NULL);
+}
+double endTime(char* task) {
+	gettimeofday(&end, NULL);
+	double msdif = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_usec - start.tv_usec)/1000.0;
+	printf("%s took time(ms): %.3f\n", task, msdif);
+	return msdif;
+}
+
+
 
 // options for particle rendering
 enum ParticleAlgorithm { EULER, PARTICLENONE };
@@ -449,6 +479,17 @@ class qNode {
 			vy /= 4.0;
 			//phi /= 4.0;
 		    leaf = true;
+		}
+		void profile() {
+			numNodes++;
+			if (leaf) {
+				numLeaves++;
+				leafLevels[level]++;
+			} else {
+				for (int k = 0; k < 4; k++) {
+					children[k]->profile();
+				}
+			}
 		}
 };
 
@@ -955,8 +996,7 @@ void relax(int d, int r) {
 double curlThresh = 0.1;
 double curlAdaptFunction(qNode* node) {
 	double curl = node->getCurl();
-	printf("curl for [%d](%d, %d) = %f\n", node->level, node->i, node->j, curl);
-	if (testAdaptFunc == TESTFUNCNONE)
+	if (adaptTestFunc == TESTFUNCNONE)
 		return fabs(curl) > curlThresh / (1<<node->level);
 	return fabs(curl) > curlThresh;
 }
@@ -984,7 +1024,6 @@ bool recursiveAdaptivity(qNode* node) {
     if (node->leaf) {
         // see if should node cell
         if (adaptFunction(node)) {
-			printf("expanding node\n");
 			node->shouldExpand = true;
 			return true;
         }
@@ -1000,7 +1039,6 @@ bool recursiveAdaptivity(qNode* node) {
     if (allChildrenLeaves && !adaptFunction(node)) {
         // this wouldn't be expanded if it was a leaf, so it shouldn't have leaf children
 		node->shouldContract = true;
-		printf("contracting node\n");
 		return true;
     } else {
 		bool anyChanged = false;
@@ -1180,6 +1218,7 @@ void runStep() {
 	}*/
 	std::swap(root, oldRoot);
 
+	double totalTime  = 0.0;
 
 	// compute velocity divergence for advection calculation
 	// TODO fix?
@@ -1187,7 +1226,9 @@ void runStep() {
 	
 	// advect velocity, copy old stuff
 	printf("advecting velocity\n");
+	startTime();
 	advectAndCopy(root, oldRoot);
+	totalTime += endTime("advecting and copying");
 	
 	printf("computing divV\n");
 
@@ -1196,6 +1237,8 @@ void runStep() {
 	root->computeVelocityDivergence();
 
 	printf("starting poisson solver\n");
+
+	startTime();
 
 	// compute all residuals, so that the whole bottom multilevel is computed
 	doneVCycle = true;
@@ -1210,19 +1253,29 @@ void runStep() {
 		runVCycle();	
 	}
 	printf("end poisson solver, took %d cycles\n", numCycles);
+	totalTime += endTime("poisson solver");
 	
 
 	printf ("doing adaptivity\n");
+	startTime();
     // given new state, do adaptivity
 	if (adaptScheme != ADAPTNONE) {
     	recursiveAdaptivity(root);
 		recursiveExpandContract(root);
 	}
+	totalTime += endTime("adapting");
 
+	startTime();
 	project(root);
 
 	clampVelocity(root);
+	totalTime += endTime("projecting and clamping velocity");
 
+	printf("total run step time: %f\n", totalTime);
+	
+	resetProfiling();
+	root->profile();
+	printProfiling();
 
 	if (particleAlgorithm != PARTICLENONE) {
 		advectParticles();
@@ -1264,7 +1317,7 @@ void runStep() {
 			printf("\n");
 		}
 	}*/
-	printPressure();
+	//printPressure();
 
 	// increase frame number here instead of in display so that you get 1 of each frame, not dependent on glut's redrawing, like on alt-tabbing or anything
 	frameNumber++;
@@ -1371,9 +1424,10 @@ void initRecursive(qNode* node, int d) {
 }
 
 void poissonResetPressure(qNode* node) {
-	node->p = 0;
+	//node->p = 0;
+	int size = 1<<node->level;
+	node->p = 1.0/size/size/12;
 	if (node->leaf) {
-		int size = 1<<node->level;
 		double x = (node->j + 0.5)/size;
 		double y = (node->i + 0.5)/size;
 		node->divV = 6*x*y*y + 2*x*x*x;
@@ -1416,6 +1470,8 @@ void runPoissonTest() {
 	
 	// run V cycles, compute stuff
 	int i = 0;
+
+	startTime();
 	while (!doneVCycle) {
 		i++;
 		printf("residual after %d vcycles: %f\n", i, runVCycle());
@@ -1425,9 +1481,11 @@ void runPoissonTest() {
 		double avgError = total / count;
 		printf("average error after %d vcycles: %f\n", i, avgError);
 
-		if (i == 1) break;
+		//if (i == 10) break;
 	}
+	endTime("poisson test");
 	
+	printf("poisson test took %d vcycles\n", i);
 }
 
 void setAdaptTestValues(qNode* node) {
@@ -1465,6 +1523,11 @@ void runAdaptTest() {
 		numCycles++;
 	}
 	printf("number of adapts done: %d\n", numCycles);
+
+	resetProfiling();
+	root->profile();
+	printProfiling();	
+
 }
 
 // TODO add different possible starting states
