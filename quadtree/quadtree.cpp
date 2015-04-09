@@ -84,6 +84,8 @@ enum StartState { LEFT, SINK, SRCSINK, POISSONTEST, ADAPTTEST };
 StartState startState;
 enum AdaptScheme { ADAPTNONE, CURL, PGRAD };
 AdaptScheme adaptScheme = ADAPTNONE;
+enum AdaptTestFunc { TESTFUNCNONE, XY, SIN, PARABOLA };
+AdaptTestFunc adaptTestFunc = TESTFUNCNONE;
 
 double dt = .04;
 
@@ -348,9 +350,22 @@ class qNode {
 		
 		// curl(F) = d(Fy)/dx - d(Fx)/dy
 		double getCurl() {
-			std::pair<double, double> xgrad = getVelocitySingleGradient(true);
-			std::pair<double, double> ygrad = getVelocitySingleGradient(false);
-			return ygrad.first - xgrad.second;
+			if (adaptTestFunc == TESTFUNCNONE) {
+				std::pair<double, double> xgrad = getVelocitySingleGradient(true);
+				std::pair<double, double> ygrad = getVelocitySingleGradient(false);
+				return ygrad.first - xgrad.second;
+			}
+			int size = 1<<level;
+			double x = (j + 0.5)/size;
+			double y = (i + 0.5)/size;
+			if (adaptTestFunc == XY) {
+				return .5*x*y;
+			} else if (adaptTestFunc == SIN) {
+				return .2*sin(M_PI*x)*sin(M_PI*y);
+			} else if (adaptTestFunc == PARABOLA) {
+				return (.5-x)*(.5-y);
+			}
+			assert(false);
 		}
 		
 		void computeVelocityDivergence() {
@@ -937,10 +952,13 @@ void relax(int d, int r) {
 
 // returns true if leaf should be expanded, false if it should not
 
-double curlThresh = 0.05;
+double curlThresh = 0.1;
 double curlAdaptFunction(qNode* node) {
 	double curl = node->getCurl();
-	return fabs(curl) > curlThresh / (1<<node->level);
+	printf("curl for [%d](%d, %d) = %f\n", node->level, node->i, node->j, curl);
+	if (testAdaptFunc == TESTFUNCNONE)
+		return fabs(curl) > curlThresh / (1<<node->level);
+	return fabs(curl) > curlThresh;
 }
 
 double pressureThresh = .01;
@@ -962,9 +980,11 @@ bool adaptFunction(qNode* node) {
 bool recursiveAdaptivity(qNode* node) {
 	node->shouldContract = false;
 	node->shouldExpand = false;
+	if (node->level == levels - 1) return false;
     if (node->leaf) {
         // see if should node cell
         if (adaptFunction(node)) {
+			printf("expanding node\n");
 			node->shouldExpand = true;
 			return true;
         }
@@ -980,11 +1000,12 @@ bool recursiveAdaptivity(qNode* node) {
     if (allChildrenLeaves && !adaptFunction(node)) {
         // this wouldn't be expanded if it was a leaf, so it shouldn't have leaf children
 		node->shouldContract = true;
+		printf("contracting node\n");
 		return true;
     } else {
-		bool anyChanged = true;
+		bool anyChanged = false;
         for (int k = 0; k < 4; k++) {
-            anyChanged &= recursiveAdaptivity(node->children[k]);
+            anyChanged |= recursiveAdaptivity(node->children[k]);
         }
 		return anyChanged;
     }
@@ -1310,7 +1331,7 @@ void initPoissonTest(qNode* node) {
 }
 
 void initNodeFunction(qNode* node) {
-	if (startState == LEFT)
+	if (startState == LEFT || startState == ADAPTTEST)
 		initNodeLeftUniform(node);
 	else if (startState == SINK)
 		initNodeSink(node);
@@ -1381,7 +1402,11 @@ void computePoissonError(qNode* node, double *total, double *count) {
 
 void runPoissonTest() {
 	// adapt if needed
-	//while (recursiveAdapt(root));
+	/*bool done = false;
+	while (!done) {
+		done = !recursiveAdaptivity(root);
+		recursiveExpandContract(root);
+	}*/
 
 	// set all pressure to 0 again
 	poissonResetPressure(root);
@@ -1405,6 +1430,43 @@ void runPoissonTest() {
 	
 }
 
+void setAdaptTestValues(qNode* node) {
+	// sets velocity for rendering n shit
+	int size = 1<<node->level;
+	double x = (node->j + 0.5)/size;
+	double y = (node->i + 0.5)/size;
+	if (adaptTestFunc == XY) {
+		node->vx = -.125*x*y*y;
+		node->vy = .125*x*x*y;
+	} else if (adaptTestFunc == SIN) {
+		node->vx = -.8/M_PI*cos(M_PI*x)*sin(M_PI*y);
+		node->vy = -1/M_PI*sin(M_PI*x)*cos(M_PI*y);
+	} else if (adaptTestFunc == PARABOLA) {
+		node->vx = .5*x*y + .25*y*y;
+		node->vy = .25*y + .5*x*x*y;
+	}
+	if (!node->leaf) {
+		for (int k = 0; k < 4; k++) {
+			setAdaptTestValues(node->children[k]);
+		}
+	}
+}
+
+void runAdaptTest() {
+	assert(adaptScheme == CURL);
+	setAdaptTestValues(root);
+	bool done = false;
+	int numCycles = -1;
+	while (!done) {
+		done = !recursiveAdaptivity(root);
+		recursiveExpandContract(root);
+		printf("recursiveAdaptivity returned %d\n", !done);
+		setAdaptTestValues(root);
+		numCycles++;
+	}
+	printf("number of adapts done: %d\n", numCycles);
+}
+
 // TODO add different possible starting states
 void initSim() {
 	printf("init sim\n");
@@ -1415,6 +1477,9 @@ void initSim() {
 	int startLevel = levels - 2;
 	if (startState == POISSONTEST) {
 		startLevel = levels - 1;
+	} else if (startState == ADAPTTEST) {
+		assert(levels > 3);
+		startLevel = 4;
 	}
 
 	initRecursive(root, startLevel);
@@ -1422,7 +1487,7 @@ void initSim() {
 		runPoissonTest();
 		return;
 	} else if (startState == ADAPTTEST) {
-		//runAdaptTest();
+		runAdaptTest();
 		return;
 	}
 
@@ -1494,6 +1559,7 @@ int main(int argc, char** argv) {
 	screenshot = false;
 	particleAlgorithm = PARTICLENONE;
 	adaptScheme = ADAPTNONE;
+	adaptTestFunc = TESTFUNCNONE;
 	startState = LEFT;
 	for (int i = 1; i < argc; i++) {
 		char* arg = argv[i];
@@ -1542,6 +1608,14 @@ int main(int argc, char** argv) {
 			startState = POISSONTEST;
 		} else if (!strcmp("adapttest", arg)) {
 			startState = ADAPTTEST;
+			char* func = argv[++i];
+			if (!strcmp("xy", func)) {
+				adaptTestFunc = XY;
+			} else if (!strcmp("sin", func)) {
+				adaptTestFunc = SIN;
+			} else if (!strcmp("parabola", func)) {
+				adaptTestFunc = PARABOLA;
+			}
 		}
 	}
 	//levelToDisplay = levels/2;
