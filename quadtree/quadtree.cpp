@@ -114,8 +114,10 @@ enum StartState { LEFT, SINK, SRCSINK, POISSONTEST, ADAPTTEST };
 StartState startState;
 enum AdaptScheme { ADAPTNONE, CURL, PGRAD };
 AdaptScheme adaptScheme = ADAPTNONE;
-enum AdaptTestFunc { TESTFUNCNONE, XY, SIN, PARABOLA };
-AdaptTestFunc adaptTestFunc = TESTFUNCNONE;
+enum AdaptTestFunc { ADAPTFUNCNONE, ADAPTXY, ADAPTSIN, PARABOLA };
+AdaptTestFunc adaptTestFunc = ADAPTFUNCNONE;
+enum PoissonTestFunc { POISSONFUNCNONE, POISSONXY, POLAR, POISSONSIN };
+PoissonTestFunc poissonTestFunc = POISSONFUNCNONE;
 
 double dt = .04;
 
@@ -380,7 +382,7 @@ class qNode {
 		
 		// curl(F) = d(Fy)/dx - d(Fx)/dy
 		double getCurl() {
-			if (adaptTestFunc == TESTFUNCNONE) {
+			if (adaptTestFunc == ADAPTFUNCNONE) {
 				std::pair<double, double> xgrad = getVelocitySingleGradient(true);
 				std::pair<double, double> ygrad = getVelocitySingleGradient(false);
 				return ygrad.first - xgrad.second;
@@ -388,9 +390,9 @@ class qNode {
 			int size = 1<<level;
 			double x = (j + 0.5)/size;
 			double y = (i + 0.5)/size;
-			if (adaptTestFunc == XY) {
+			if (adaptTestFunc == ADAPTXY) {
 				return .5*x*y;
-			} else if (adaptTestFunc == SIN) {
+			} else if (adaptTestFunc == ADAPTSIN) {
 				return .2*sin(M_PI*x)*sin(M_PI*y);
 			} else if (adaptTestFunc == PARABOLA) {
 				return (.5-x)*(.5-y);
@@ -996,7 +998,7 @@ void relax(int d, int r) {
 double curlThresh = 0.1;
 double curlAdaptFunction(qNode* node) {
 	double curl = node->getCurl();
-	if (adaptTestFunc == TESTFUNCNONE)
+	if (adaptTestFunc == ADAPTFUNCNONE)
 		return fabs(curl) > curlThresh / (1<<node->level);
 	return fabs(curl) > curlThresh;
 }
@@ -1423,33 +1425,71 @@ void initRecursive(qNode* node, int d) {
 	}
 }
 
-void poissonResetPressure(qNode* node) {
+void poissonReset(qNode* node) {
 	//node->p = 0;
 	int size = 1<<node->level;
 	node->p = 1.0/size/size/12;
 	if (node->leaf) {
 		double x = (node->j + 0.5)/size;
 		double y = (node->i + 0.5)/size;
-		node->divV = 6*x*y*y + 2*x*x*x;
+		if (poissonTestFunc == POISSONXY) {
+			node->divV = 6*x*y*y + 2*x*x*x;
+		} else if (poissonTestFunc == POLAR) {
+			double r = sqrt(x*x + y*y);
+			double theta = tan(y/x);
+			node->divV = 7*r*r*cos(3*theta);
+		} else if (poissonTestFunc == POISSONSIN) {
+			int k = 3;
+			int l = 3;
+			//node->divV = -M_PI*M_PI*(k*k + l*l)*sin(M_PI*k*x)*sin(M_PI*l*y);
+			node->divV = -M_PI*M_PI*(k*k + l*l)*cos(M_PI*k*x)*cos(M_PI*l*y);
+		} else {
+			assert(false);
+		}
 	} else {
 		node->divV = 0;
 		for (int k = 0; k < 4; k++) {
-			poissonResetPressure(node->children[k]);
+			poissonReset(node->children[k]);
 		}
 	}
 }
 
-void computePoissonError(qNode* node, double *total, double *count) {
+void computePoissonError(qNode* node, double K, double* total, int* count) {
 	if (node->leaf) {
 		int size = 1<<node->level;
 		double x = (node->j + 0.5)/size;
 		double y = (node->i + 0.5)/size;
-		double correct = x*x*x*y*y;
+		double correct = K;
+		if (poissonTestFunc == POISSONXY) {
+			correct += x*x*x*y*y;
+		} else if (poissonTestFunc == POLAR) {
+			double r = sqrt(x*x + y*y);
+			double theta = tan(y/x);
+			correct += r*r*r*r*cos(3*theta);
+		} else if (poissonTestFunc == POISSONSIN) {
+			int k = 3;
+			int l = 3;
+			//correct += sin(M_PI*k*x) * sin(M_PI*l*y);
+			correct += cos(M_PI * k * x) * cos(M_PI * l * y);
+		} else {
+			assert(false);
+		}
 		*total += fabs(node->p - correct);
-		*count += 1;
+		(*count)++;
 	} else {
 		for (int k = 0; k < 4; k++) {
-			computePoissonError(node->children[k], total, count);
+			computePoissonError(node->children[k], K, total, count);
+		}
+	}
+}
+
+void poissonAverage(qNode* node, double* total, int* count) {
+	if (node->leaf) {
+		*total += node->p;
+		(*count)++;
+	} else {
+		for (int k = 0; k < 4; k++) {
+			poissonAverage(node->children[k], total, count);
 		}
 	}
 }
@@ -1463,7 +1503,8 @@ void runPoissonTest() {
 	}*/
 
 	// set all pressure to 0 again
-	poissonResetPressure(root);
+	assert(poissonTestFunc != POISSONFUNCNONE);
+	poissonReset(root);
 	
 	double initialResidual = computeResidual(root);
 	printf("initial residual: %f\n", initialResidual);
@@ -1475,9 +1516,17 @@ void runPoissonTest() {
 	while (!doneVCycle) {
 		i++;
 		printf("residual after %d vcycles: %f\n", i, runVCycle());
-		double total = 0;
-		double count = 0;
-		computePoissonError(root, &total, &count);
+		double total = 0.0;
+		int count = 0;
+		double K = 0.0;
+		//if (poissonTestFunc == POISSONSIN) {
+			poissonAverage(root, &total, &count);
+			K = total/count;
+			total = 0.0;
+			count = 0;
+		//}
+		computePoissonError(root, K, &total, &count);
+		printf("%f/%d\n", total, count);
 		double avgError = total / count;
 		printf("average error after %d vcycles: %f\n", i, avgError);
 
@@ -1493,10 +1542,10 @@ void setAdaptTestValues(qNode* node) {
 	int size = 1<<node->level;
 	double x = (node->j + 0.5)/size;
 	double y = (node->i + 0.5)/size;
-	if (adaptTestFunc == XY) {
+	if (adaptTestFunc == ADAPTXY) {
 		node->vx = -.125*x*y*y;
 		node->vy = .125*x*x*y;
-	} else if (adaptTestFunc == SIN) {
+	} else if (adaptTestFunc == ADAPTSIN) {
 		node->vx = -.8/M_PI*cos(M_PI*x)*sin(M_PI*y);
 		node->vy = -1/M_PI*sin(M_PI*x)*cos(M_PI*y);
 	} else if (adaptTestFunc == PARABOLA) {
@@ -1622,7 +1671,8 @@ int main(int argc, char** argv) {
 	screenshot = false;
 	particleAlgorithm = PARTICLENONE;
 	adaptScheme = ADAPTNONE;
-	adaptTestFunc = TESTFUNCNONE;
+	adaptTestFunc = ADAPTFUNCNONE;
+	poissonTestFunc = POISSONFUNCNONE;
 	startState = LEFT;
 	for (int i = 1; i < argc; i++) {
 		char* arg = argv[i];
@@ -1669,13 +1719,21 @@ int main(int argc, char** argv) {
 			startState = SRCSINK;
 		} else if (!strcmp("poissontest", arg)) {
 			startState = POISSONTEST;
+			char* func = argv[++i];
+			if (!strcmp("xy", func)) {
+				poissonTestFunc = POISSONXY;
+			} else if (!strcmp("polar", func)) {
+				poissonTestFunc = POLAR;
+			} else if (!strcmp("sin", func)) {
+				poissonTestFunc = POISSONSIN;
+			}
 		} else if (!strcmp("adapttest", arg)) {
 			startState = ADAPTTEST;
 			char* func = argv[++i];
 			if (!strcmp("xy", func)) {
-				adaptTestFunc = XY;
+				adaptTestFunc = ADAPTXY;
 			} else if (!strcmp("sin", func)) {
-				adaptTestFunc = SIN;
+				adaptTestFunc = ADAPTSIN;
 			} else if (!strcmp("parabola", func)) {
 				adaptTestFunc = PARABOLA;
 			}
