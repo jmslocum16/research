@@ -116,10 +116,10 @@ enum AdaptScheme { ADAPTNONE, CURL, PGRAD };
 AdaptScheme adaptScheme = ADAPTNONE;
 enum AdaptTestFunc { ADAPTFUNCNONE, ADAPTXY, ADAPTSIN, PARABOLA };
 AdaptTestFunc adaptTestFunc = ADAPTFUNCNONE;
-enum PoissonTestFunc { POISSONFUNCNONE, POISSONXY, POLAR, POISSONSIN };
+enum PoissonTestFunc { POISSONFUNCNONE, POISSONXY, POLAR, POISSONCOS };
 PoissonTestFunc poissonTestFunc = POISSONFUNCNONE;
 
-double dt = .04;
+double dt = .03;
 
 // drawing stuff
 double minP;
@@ -360,26 +360,6 @@ class qNode {
 			return getGradient(vals, sizes, 1<<level);
 		}
 
-		std::pair<double, double> getVelocityProductGradient() {
-			 double vals[4];	
-			int sizes[4];
-		
-			for (int k = 0; k < 4; k++) {
-				int ml = leaf ? levels - 1 : level;
-				std::pair<qNode*, qNode*> neighbor = getNeighborInDir(k, &ml);
-				if (neighbor.second == NULL) {
-					vals[k] = neighbor.first->vx * neighbor.first->vy;
-				} else {
-					double x = (neighbor.first->vx + neighbor.second->vx) / 2.0;
-					double y = (neighbor.first->vy + neighbor.second->vy) / 2.0;
-					vals[k] = x * y;
-				}	
-				sizes[k] = 1<<ml;
-			}
-			
-			return getGradient(vals, sizes, 1<<level);
-		}
-		
 		// curl(F) = d(Fy)/dx - d(Fx)/dy
 		double getCurl() {
 			if (adaptTestFunc == ADAPTFUNCNONE) {
@@ -1082,26 +1062,16 @@ void advectAndCopy(qNode* node, qNode* oldNode) {
 	//node->phi = oldNode->phi;
 
 
-	// advect: U** = Un - An*dt
-	// An = U*gradU, U*grad = du/dx + du/dy, so U* that is du*U/dx + du*U/dy
-	// An = <dVx^2/dx + dVyVy/dy, dXyVy/dx + dVy^2/dy>
+	// semi lagrangian advection - copy value at t - dt
 	int size = 1<<node->level;
 	double x = (node->j + 0.5)/size;
 	double y = (node->i + 0.5)/size;
 	qNode* last= getSemiLagrangianLookback(oldNode, &x, &y, 1, node->level);
 	//printf("lookback from node %d (%d, %d) gives %d (%d, %d)", node->level, node->i, node->j, last->level, last->i, last->j);
-	std::pair<double, double> vGrad = last->getVelocityGradient();
-	std::pair<double, double> vProductGrad = last->getVelocityProductGradient();
 	std::pair<double, double> velInterp = last->getVelocityAt(x, y);
 
-	double advectX = 2 * velInterp.first * vGrad.first + vProductGrad.second;
-	double advectY = vProductGrad.first + 2 * velInterp.second * vGrad.second;
-	
-	//printf("advecting grid[%d][%d][%d] by (%f, %f)\n", k, i, j, advectX, advectY);	
-	//printf("pressure at [%d][%d][%d]: %f\n", k, i, j, grid[k][i*size+j].p);
-
-	node->vx -= advectX * dt;
-	node->vy -= advectY * dt;
+	node->vx = velInterp.first;
+	node->vy = velInterp.second;
 
 	// add gravity TODO(make better)
 	//grid[index].vy -= .98 * dt;
@@ -1207,7 +1177,7 @@ double runVCycle() {
 }
 
 void runStep() {
-	printf("running step\n");
+	printf("running step %d\n", frameNumber + 1);
 	/*for (int d = 0; d < levels; d++) {
 		printf("level %d\n", d);
 		int size = 1<<d;
@@ -1273,7 +1243,7 @@ void runStep() {
 	clampVelocity(root);
 	totalTime += endTime("projecting and clamping velocity");
 
-	printf("total run step time: %f\n", totalTime);
+	printf("total run step time: %.3f\n", totalTime);
 	
 	resetProfiling();
 	root->profile();
@@ -1438,10 +1408,9 @@ void poissonReset(qNode* node) {
 			double r = sqrt(x*x + y*y);
 			double theta = tan(y/x);
 			node->divV = 7*r*r*cos(3*theta);
-		} else if (poissonTestFunc == POISSONSIN) {
+		} else if (poissonTestFunc == POISSONCOS) {
 			int k = 3;
 			int l = 3;
-			//node->divV = -M_PI*M_PI*(k*k + l*l)*sin(M_PI*k*x)*sin(M_PI*l*y);
 			node->divV = -M_PI*M_PI*(k*k + l*l)*cos(M_PI*k*x)*cos(M_PI*l*y);
 		} else {
 			assert(false);
@@ -1466,10 +1435,9 @@ void computePoissonError(qNode* node, double K, double* total, int* count) {
 			double r = sqrt(x*x + y*y);
 			double theta = tan(y/x);
 			correct += r*r*r*r*cos(3*theta);
-		} else if (poissonTestFunc == POISSONSIN) {
+		} else if (poissonTestFunc == POISSONCOS) {
 			int k = 3;
 			int l = 3;
-			//correct += sin(M_PI*k*x) * sin(M_PI*l*y);
 			correct += cos(M_PI * k * x) * cos(M_PI * l * y);
 		} else {
 			assert(false);
@@ -1519,14 +1487,13 @@ void runPoissonTest() {
 		double total = 0.0;
 		int count = 0;
 		double K = 0.0;
-		//if (poissonTestFunc == POISSONSIN) {
+		//if (poissonTestFunc == POISSONCOS) {
 			poissonAverage(root, &total, &count);
 			K = total/count;
 			total = 0.0;
 			count = 0;
 		//}
 		computePoissonError(root, K, &total, &count);
-		printf("%f/%d\n", total, count);
 		double avgError = total / count;
 		printf("average error after %d vcycles: %f\n", i, avgError);
 
@@ -1724,8 +1691,8 @@ int main(int argc, char** argv) {
 				poissonTestFunc = POISSONXY;
 			} else if (!strcmp("polar", func)) {
 				poissonTestFunc = POLAR;
-			} else if (!strcmp("sin", func)) {
-				poissonTestFunc = POISSONSIN;
+			} else if (!strcmp("cos", func)) {
+				poissonTestFunc = POISSONCOS;
 			}
 		} else if (!strcmp("adapttest", arg)) {
 			startState = ADAPTTEST;
