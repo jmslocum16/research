@@ -525,6 +525,8 @@ qNode*  getSemiLagrangianLookback(qNode* r, double* x, double* y, int steps, int
 		std::pair<double, double> vel = cur->getVelocityAt(*x, *y);
 		*x -= vel.first * newdt;
 		*y -= vel.second * newdt;
+		*x = fmin(1.0, fmax(0, *x));
+		*y = fmin(1.0, fmax(0, *y));
 		cur = getLeaf(r, *x, *y, ml);
 	}
 	return cur;
@@ -571,11 +573,11 @@ void drawMultilevel(qNode* node, int ml) {
 		} else {
 			double redPercent = 0.0;
 			double bluePercent = 0.0;
-			if (node->p > 0) {
+			if (node->p > 0 && maxP > 0) {
 				redPercent = node->p/maxP;
 			}
-			if (node->p < 0) {
-				bluePercent = node->p/-minP;
+			if (node->p < 0 && minP < 0) {
+				bluePercent = node->p/minP;
 			}
 			
 			glColor3f(redPercent, 0, bluePercent);
@@ -1420,7 +1422,10 @@ void poissonReset(qNode* node) {
 		if (poissonTestFunc == POISSONXY) {
 			node->divV = 96 * (2*x-1) * (y-1)*(y-1) * y*y  +  32 * (x-1)*(x-1) * (2*x+1) * (1 - 6*y + 6*y*y);
 		} else if (poissonTestFunc == POISSONCOS) {
-			node->divV = 4*M_PI*M_PI* cos(2*M_PI*x) * (1-2*cos(2*M_PI*y))  +  cos(2*M_PI*y);
+			//node->divV = 4*M_PI*M_PI* (cos(2*M_PI*x) * (1-2*cos(2*M_PI*y)) + cos(2*M_PI*y));
+			double cx = cos(M_PI*2*x);
+			double cy = cos(M_PI*2*y);
+			node->divV = 4*M_PI*M_PI * (cx + cy - 2*cx*cy);
 		} else if (poissonTestFunc == POISSONCOSKL) {
 			int k = 3;
 			int l = 3;
@@ -1528,7 +1533,7 @@ void runPoissonTest() {
 	
 	printf("poisson test took %d vcycles\n", i);
 
-	//printPressure();
+	printPressure();
 }
 
 void setAdaptTestValues(qNode* node) {
