@@ -414,25 +414,29 @@ class qNode {
 		}
 
 		// adaptivity
-		void expand() {
+		void expand(bool calculateNewVals) {
 			assert(leaf);
     		//printf("expanding cell %d, (%d, %d)\n", level, i, j);
     		int size = 1<<level;
     		// std::pair<double, double> levelSetGrad;
     		for (int k = 0; k < 4; k++) {
-        		int constX = k%2 == 0 ? -1 : 1;
-        		int constY = k/2 == 0 ? -1 : 1;
-				double newx = (j + 0.5)/size + (constX*.25)/size;
-				double newy = (i + 0.5)/size + (constY*.25)/size;
+
 				this->children[k] = new qNode(this, 2*i+(k/2), 2*j+(k%2));
 
-				//children[k]->p = getPressureAt(newx, newy);
-				children[k]->p = getValueAt(newx, newy, P);
-				// TODO incorporate full velocity gradients?
-				std::pair<double, double> newVel = getVelocityAt(newx, newy);
-        		children[k]->vx = newVel.first;
-        		children[k]->vy = newVel.second;
-        		// children[k]->phi = ...
+				if (calculateNewVals) {
+	        		int constX = k%2 == 0 ? -1 : 1;
+	        		int constY = k/2 == 0 ? -1 : 1;
+					double newx = (j + 0.5)/size + (constX*.25)/size;
+					double newy = (i + 0.5)/size + (constY*.25)/size;
+	
+					//children[k]->p = getPressureAt(newx, newy);
+					children[k]->p = getValueAt(newx, newy, P);
+					// TODO incorporate full velocity gradients?
+					std::pair<double, double> newVel = getVelocityAt(newx, newy);
+        			children[k]->vx = newVel.first;
+        			children[k]->vy = newVel.second;
+        			// children[k]->phi = ...
+				}
     		}
 			setChildrenNeighbors();
 			leaf = false;
@@ -714,11 +718,11 @@ bool assertNeighbors(qNode* n1, qNode* n2, qNode* realN1, qNode* realN2) {
 void testMultilevelNeighbors() {
 	// construct tree
 	qNode* testRoot = new qNode(NULL, 0, 0);
-	testRoot->expand();
-	testRoot->children[1]->expand();
-	testRoot->children[2] ->expand();
-	testRoot->children[1]->children[0]->expand();
-	testRoot->children[1]->children[2]->expand();
+	testRoot->expand(false);
+	testRoot->children[1]->expand(false);
+	testRoot->children[2] ->expand(false);
+	testRoot->children[1]->children[0]->expand(false);
+	testRoot->children[1]->children[2]->expand(false);
 
 	// actual tests
 
@@ -776,12 +780,12 @@ void testMultilevelNeighbors() {
 // tests neighbor pointers
 void testNeighbors() {
 	qNode* testRoot = new qNode(NULL, 0, 0);
-	testRoot->expand();
+	testRoot->expand(false);
 
 	for (int i = 0; i < 2; i++) {
 		for (int j = 0; j < 2; j++) {
 			qNode* c = testRoot->children[i * 2 + j];
-			c->expand();
+			c->expand(false);
 			if (c->neighbors[2+j] != testRoot->children[i*2+(1-j)]) {
 				printf("WRONG INNER X NEIGHBOR (%d, %d)\n", i, j);
 				assert(false);
@@ -1049,7 +1053,7 @@ void recursiveExpandContract(qNode* node) {
 	if (node->shouldContract) {
 		node->contract();
 	} else if (node->shouldExpand) {
-		node->expand();
+		node->expand(true);
 	} else if (!node->leaf) {
 		for (int k = 0; k < 4; k++) {
 			recursiveExpandContract(node->children[k]);
@@ -1063,7 +1067,7 @@ void advectAndCopy(qNode* node, qNode* oldNode) {
 	// need to create/delete new nodes if it adapted
 	if (node->leaf && !oldNode->leaf) {
 		// old node expanded, expand new node
-		node->expand();
+		node->expand(false);
 	} else if (!node->leaf && oldNode->leaf) {
 		// old node contracted
 		node->contract(); // TODO this doesn't handle multiple contractions per step, but rn only do single contract/expand per step
@@ -1248,6 +1252,8 @@ void runStep() {
 	startTime();
     // given new state, do adaptivity
 	if (adaptScheme != ADAPTNONE) {
+		//std::swap(root, oldRoot);
+		//recursiveAdaptAndCopy();
     	recursiveAdaptivity(root);
 		recursiveExpandContract(root);
 	}
@@ -1390,7 +1396,7 @@ void initRecursive(qNode* node, int d) {
 	if (node->level == d) {
 		initNodeFunction(node);
 	} else {
-		node->expand();
+		node->expand(false);
 
 		node->p = 0.0;
         node->vx = 0.0;
@@ -1486,7 +1492,7 @@ void expandRadius(qNode* node, double radius) {
 		double y = (node->i + 0.5)/size;
 		double dist = sqrt((0.5-x)*(0.5-x) + (0.5-y)*(0.5-y));
 		if (dist < radius) {
-			node->expand();
+			node->expand(false);
 		}
 	} else {
 		for (int k = 0; k < 4; k++) {
