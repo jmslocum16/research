@@ -116,7 +116,7 @@ enum AdaptScheme { ADAPTNONE, CURL, PGRAD };
 AdaptScheme adaptScheme = ADAPTNONE;
 enum AdaptTestFunc { ADAPTFUNCNONE, ADAPTXY, ADAPTSIN, PARABOLA };
 AdaptTestFunc adaptTestFunc = ADAPTFUNCNONE;
-enum PoissonTestFunc { POISSONFUNCNONE, POISSONXY, POLAR, POISSONCOS };
+enum PoissonTestFunc { POISSONFUNCNONE, POISSONXY, POISSONCOS, POISSONCOSKL };
 PoissonTestFunc poissonTestFunc = POISSONFUNCNONE;
 
 double dt = .03;
@@ -329,28 +329,6 @@ class qNode {
 		}
 
 		// utility functions
-		/*std::pair<double, double> getPressureGradient() {
-			int size = 1<<level;
-			double vals[4];
-			int sizes[4];
-			for (int k = 0; k < 4; k++) {
-				int ml = leaf ? levels - 1 : level; // multilevel if leaf otherwise regular level
-				std::pair<qNode*, qNode*> neighbor = getNeighborInDir(k, &ml);
-				
-				if (neighbor.second == NULL) {
-					// only 1
-					vals[k] = neighbor.first->p;
-				} else {
-					vals[k] = (neighbor.first->p + neighbor.second->p)/2.0;
-				}
-				vals[k] = getValueInDir(k, P, &ml);
-				sizes[k] = 1<<ml;
-			}
-			return getGradient(vals, sizes, size);
-		}*/
-		
-		// TODO
-		/*std::pair<double, double> getLevelSetGradient() {}*/
 		
 		std::pair<double, double> getVelocityGradient() {
 		    double vals[4];
@@ -358,16 +336,6 @@ class qNode {
 		
 			for (int k = 0; k < 4; k++) {
 				int ml = leaf ? levels - 1 : level;
-				/*std::pair<qNode*, qNode*> neighbor = getNeighborInDir(k, &ml);
-				if (neighbor.second == NULL) {
-					vals[k] = (k < 2) ? neighbor.first->vy : neighbor.first->vx;
-				} else {
-					if (k < 2) {
-						vals[k] = (neighbor.first->vy + neighbor.second->vy) / 2.0;
-					} else {
-						vals[k] = (neighbor.first->vx + neighbor.second->vx) / 2.0;
-					}
-				}*/
 				vals[k] = getValueInDir(k, (k < 2) ? VY : VX, &ml);
 				sizes[k] = 1<<ml;
 			}
@@ -387,29 +355,6 @@ class qNode {
 			return getGradient(vals, sizes, 1<<level);
 		}
 		
-		/*std::pair<double, double> getVelocitySingleGradient(bool x) {
-		    double vals[4];	
-			int sizes[4];
-		
-			for (int k = 0; k < 4; k++) {
-				int ml = leaf ? levels - 1 : level;
-				std::pair<qNode*, qNode*> neighbor = getNeighborInDir(k, &ml);
-				if (neighbor.second == NULL) {
-					vals[k] = x ? neighbor.first->vx : neighbor.first->vy;
-				} else {
-					if (x) {
-						vals[k] = (neighbor.first->vx + neighbor.second->vx) / 2.0;
-					} else {
-						vals[k] = (neighbor.first->vy + neighbor.second->vy) / 2.0;
-					}
-				}
-				vals[k] = getValueInDir(k, x ? VX : VY, &ml);
-				sizes[k] = 1<<ml;
-			}
-			
-			return getGradient(vals, sizes, 1<<level);
-		}*/
-
 		// curl(F) = d(Fy)/dx - d(Fx)/dy
 		double getCurl() {
 			if (adaptTestFunc == ADAPTFUNCNONE) {
@@ -1153,6 +1098,7 @@ void advectAndCopy(qNode* node, qNode* oldNode) {
 }
 
 void correctPressure(qNode* node) {
+	//node->p += node->dp;
 	if (node->leaf) {
 		//printf("at node %d (%d, %d) correcting pressure %f by %f\n", node->level, node->i, node->j, node->p, node->dp);
 		node->p += node->dp;
@@ -1390,6 +1336,7 @@ void initNodeSink(qNode* node) {
 void initNodeSrcSink(qNode* node) {
 	int size = 1<<node->level;
 	node->p = 1.0/size/size;
+	//node->p = 1.0;
 	node->phi = 0.0;
 	
 	double src = .125;
@@ -1471,12 +1418,10 @@ void poissonReset(qNode* node) {
 		double x = (node->j + 0.5)/size;
 		double y = (node->i + 0.5)/size;
 		if (poissonTestFunc == POISSONXY) {
-			node->divV = 6*x*y*y + 2*x*x*x;
-		} else if (poissonTestFunc == POLAR) {
-			double r = sqrt(x*x + y*y);
-			double theta = tan(y/x);
-			node->divV = 7*r*r*cos(3*theta);
+			node->divV = 96 * (2*x-1) * (y-1)*(y-1) * y*y  +  32 * (x-1)*(x-1) * (2*x+1) * (1 - 6*y + 6*y*y);
 		} else if (poissonTestFunc == POISSONCOS) {
+			node->divV = 4*M_PI*M_PI* cos(2*M_PI*x) * (1-2*cos(2*M_PI*y))  +  cos(2*M_PI*y);
+		} else if (poissonTestFunc == POISSONCOSKL) {
 			int k = 3;
 			int l = 3;
 			node->divV = -M_PI*M_PI*(k*k + l*l)*cos(M_PI*k*x)*cos(M_PI*l*y);
@@ -1498,12 +1443,11 @@ void computePoissonError(qNode* node, double K, double* total, int* count) {
 		double y = (node->i + 0.5)/size;
 		double correct = K;
 		if (poissonTestFunc == POISSONXY) {
-			correct += x*x*x*y*y;
-		} else if (poissonTestFunc == POLAR) {
-			double r = sqrt(x*x + y*y);
-			double theta = tan(y/x);
-			correct += r*r*r*r*cos(3*theta);
+			double newy = 2*y+1;
+			correct += (2*x*x*x - 3*x*x + 1)  *  (newy*newy*newy*newy - 2*newy*newy + 1);
 		} else if (poissonTestFunc == POISSONCOS) {
+			correct += (1-cos(M_PI * 2 * x)) * (1-cos(M_PI * 2 * y));
+		} else if (poissonTestFunc == POISSONCOSKL) {
 			int k = 3;
 			int l = 3;
 			correct += cos(M_PI * k * x) * cos(M_PI * l * y);
@@ -1547,9 +1491,9 @@ void expandRadius(qNode* node, double radius) {
 }
 
 void runPoissonTest() {
-	// adapt if needed
-	expandRadius(root, .3);
-	expandRadius(root, .2);
+	// adapt
+	// expandRadius(root, .3);
+	// expandRadius(root, .2);
 
 	// set all pressure to 0 again
 	assert(poissonTestFunc != POISSONFUNCNONE);
@@ -1568,7 +1512,7 @@ void runPoissonTest() {
 		double total = 0.0;
 		int count = 0;
 		double K = 0.0;
-		//if (poissonTestFunc == POISSONCOS) {
+		//if (poissonTestFunc == POISSONCOSKL) {
 			poissonAverage(root, &total, &count);
 			K = total/count;
 			total = 0.0;
@@ -1583,6 +1527,8 @@ void runPoissonTest() {
 	endTime("poisson test");
 	
 	printf("poisson test took %d vcycles\n", i);
+
+	//printPressure();
 }
 
 void setAdaptTestValues(qNode* node) {
@@ -1636,7 +1582,8 @@ void initSim() {
 
 	int startLevel = levels - 2;
 	if (startState == POISSONTEST) {
-		startLevel = levels - 3;
+		// startLevel = levels - 3;
+		startLevel = levels - 1;
 	} else if (startState == ADAPTTEST) {
 		assert(levels > 3);
 		startLevel = 4;
@@ -1770,10 +1717,10 @@ int main(int argc, char** argv) {
 			char* func = argv[++i];
 			if (!strcmp("xy", func)) {
 				poissonTestFunc = POISSONXY;
-			} else if (!strcmp("polar", func)) {
-				poissonTestFunc = POLAR;
 			} else if (!strcmp("cos", func)) {
 				poissonTestFunc = POISSONCOS;
+			} else if (!strcmp("coskl", func)) {
+				poissonTestFunc = POISSONCOSKL;
 			}
 		} else if (!strcmp("adapttest", arg)) {
 			startState = ADAPTTEST;
