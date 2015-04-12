@@ -442,32 +442,17 @@ class qNode {
 			leaf = false;
 		}
 
+		// don't need to average values since adapt function takes care of that
 		void contract() {
 			assert(!leaf);
 			for (int k = 0; k < 4; k++) {
 				assert(children[k]->leaf);
 			}
 		    //printf("contracting cell %d (%d, %d)\n", level, i, j);
-			// average child values and set used/leaf
-		    int size = 1<<level;
-			p = 0.0;
-			vx = 0.0;
-			vy = 0.0;
-			//phi = 0.0;
-		    
 			for (int k = 0; k < 4; k++) {
-				p += children[k]->p;
-				vx += children[k]->vx;
-				vy += children[k]->vy;
-				//phi += children[k]->phi;
 				delete children[k];
 			}
-			
-			p /= 4.0;
-			vx /= 4.0;
-			vy /= 4.0;
-			//phi /= 4.0;
-		    leaf = true;
+			leaf = true;
 		}
 		void profile() {
 			numNodes++;
@@ -1016,51 +1001,69 @@ bool adaptFunction(qNode* node) {
 	}
 }
 
+// trees should have the same structure
+// use old tree for adapt calculations
+// copies new pressure over
 // returns true if any nodes were changed, false otherwise
-bool recursiveAdaptivity(qNode* node) {
-	node->shouldContract = false;
-	node->shouldExpand = false;
+bool recursiveAdaptAndCopy(qNode* node, qNode* oldNode) {
 	if (node->level == levels - 1) return false;
-    if (node->leaf) {
-        // see if should node cell
-        if (adaptFunction(node)) {
-			node->shouldExpand = true;
+	assert (node->leaf == oldNode->leaf);
+	node->p = oldNode->p;
+	if (node->leaf) {
+		if (adaptFunction(oldNode)) {
+			double oldP = oldNode->p;
+			double oldVx = oldNode->vx;
+			double oldVy = oldNode->vy;
+
+			oldNode->expand(true);
+			node->expand(false);
+			for (int k = 0; k < 4; k++) {
+				node->children[k]->p = oldNode->children[k]->p;
+				node->children[k]->vx = oldNode->children[k]->vx;
+				node->children[k]->vy =  oldNode->children[k]->vy;
+			}
+			// reset old node to old state so it is the same as before, so it can be used in other calculations
+			oldNode->contract();
+			oldNode->p = oldP;
+			oldNode->vx = oldVx;
+			oldNode->vy = oldVy;
+
+			// now node is adapted, with values from oldnode's calculations
 			return true;
-        }
-        return false;
-    }
-    bool allChildrenLeaves = true;
+		}
+		return false;
+	}
+	bool allChildrenLeaves = true;
     for (int k = 0; k < 4; k++) {
         if (!node->children[k]->leaf) {
             allChildrenLeaves = false;
             break;
         }
     }
-    if (allChildrenLeaves && !adaptFunction(node)) {
+	if (allChildrenLeaves && !adaptFunction(oldNode)) {
         // this wouldn't be expanded if it was a leaf, so it shouldn't have leaf children
-		node->shouldContract = true;
+		node->contract();
+		node->p = 0.0;
+		node->vx = 0.0;
+		node->vy = 0.0;
+		for (int k = 0; k < 4; k++) {
+			node->p += oldNode->children[k]->p;
+			node->vx += oldNode->children[k]->vx;
+			node->vy += oldNode->children[k]->vy;
+		}
+		node->p /= 4.0;
+		node->vx /= 4.0;
+		node->vy /= 4.0;
+		//node->p = oldNode->p;
 		return true;
     } else {
 		bool anyChanged = false;
         for (int k = 0; k < 4; k++) {
-            anyChanged |= recursiveAdaptivity(node->children[k]);
+            anyChanged |= recursiveAdaptAndCopy(node->children[k], oldNode->children[k]);
         }
 		return anyChanged;
     }
-}
-
-void recursiveExpandContract(qNode* node) {
-	if (node->shouldContract) {
-		node->contract();
-	} else if (node->shouldExpand) {
-		node->expand(true);
-	} else if (!node->leaf) {
-		for (int k = 0; k < 4; k++) {
-			recursiveExpandContract(node->children[k]);
-		}
-	}
-	node->shouldExpand = false;
-	node->shouldContract = false;
+	
 }
 
 void advectAndCopy(qNode* node, qNode* oldNode) {
@@ -1252,10 +1255,8 @@ void runStep() {
 	startTime();
     // given new state, do adaptivity
 	if (adaptScheme != ADAPTNONE) {
-		//std::swap(root, oldRoot);
-		//recursiveAdaptAndCopy();
-    	recursiveAdaptivity(root);
-		recursiveExpandContract(root);
+		std::swap(root, oldRoot);
+		recursiveAdaptAndCopy(root, oldRoot);
 	}
 	totalTime += endTime("adapting");
 
@@ -1428,7 +1429,6 @@ void poissonReset(qNode* node) {
 		if (poissonTestFunc == POISSONXY) {
 			node->divV = 96 * (2*x-1) * (y-1)*(y-1) * y*y  +  32 * (x-1)*(x-1) * (2*x+1) * (1 - 6*y + 6*y*y);
 		} else if (poissonTestFunc == POISSONCOS) {
-			//node->divV = 4*M_PI*M_PI* (cos(2*M_PI*x) * (1-2*cos(2*M_PI*y)) + cos(2*M_PI*y));
 			double cx = cos(M_PI*2*x);
 			double cy = cos(M_PI*2*y);
 			node->divV = 4*M_PI*M_PI * (cx + cy - 2*cx*cy);
@@ -1564,15 +1564,16 @@ void setAdaptTestValues(qNode* node) {
 	}
 }
 
-void runAdaptTest() {
-	assert(adaptScheme == CURL);
+void runAdaptTest() {	
 	setAdaptTestValues(root);
+	assert(adaptScheme == CURL);
+	std::swap(root, oldRoot);
+	advectAndCopy(root, oldRoot);
 	bool done = false;
 	int numCycles = -1;
 	while (!done) {
-		done = !recursiveAdaptivity(root);
-		recursiveExpandContract(root);
-		printf("recursiveAdaptivity returned %d\n", !done);
+		std::swap(root, oldRoot);
+		done = recursiveAdaptAndCopy(root, oldRoot);
 		setAdaptTestValues(root);
 		numCycles++;
 	}
@@ -1597,7 +1598,7 @@ void initSim() {
 		startLevel = levels - 1;
 	} else if (startState == ADAPTTEST) {
 		assert(levels > 3);
-		startLevel = 4;
+		startLevel = std::max(levels - 4, levels/2 + 1);
 	}
 
 	initRecursive(root, startLevel);
