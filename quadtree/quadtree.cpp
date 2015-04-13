@@ -1503,8 +1503,10 @@ void expandRadius(qNode* node, double radius) {
 
 void runPoissonTest() {
 	// adapt
-	// expandRadius(root, .3);
-	// expandRadius(root, .2);
+	if (adaptScheme != ADAPTNONE) {
+		expandRadius(root, .3);
+		expandRadius(root, .2);
+	}
 
 	// set all pressure to 0 again
 	assert(poissonTestFunc != POISSONFUNCNONE);
@@ -1594,8 +1596,10 @@ void initSim() {
 
 	int startLevel = levels - 2;
 	if (startState == POISSONTEST) {
-		// startLevel = levels - 3;
-		startLevel = levels - 1;
+		if (adaptScheme == ADAPTNONE)
+			startLevel = levels - 1;
+		else
+			startLevel = levels - 3;
 	} else if (startState == ADAPTTEST) {
 		assert(levels > 3);
 		startLevel = std::max(levels - 4, levels/2 + 1);
