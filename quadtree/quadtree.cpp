@@ -1447,7 +1447,7 @@ void poissonReset(qNode* node) {
 	}
 }
 
-void computePoissonError(qNode* node, double K, double* total, int* count) {
+void computePoissonError(qNode* node, double K, double* total) {
 	if (node->leaf) {
 		int size = 1<<node->level;
 		double x = (node->j + 0.5)/size;
@@ -1465,22 +1465,21 @@ void computePoissonError(qNode* node, double K, double* total, int* count) {
 		} else {
 			assert(false);
 		}
-		*total += fabs(node->p - correct);
-		(*count)++;
+		*total += fabs(node->p - correct)/size/size;
 	} else {
 		for (int k = 0; k < 4; k++) {
-			computePoissonError(node->children[k], K, total, count);
+			computePoissonError(node->children[k], K, total);
 		}
 	}
 }
 
-void poissonAverage(qNode* node, double* total, int* count) {
+void poissonAverage(qNode* node, double* total) {
 	if (node->leaf) {
-		*total += node->p;
-		(*count)++;
+		int size = 1<<node->level;
+		*total += node->p / size / size;
 	} else {
 		for (int k = 0; k < 4; k++) {
-			poissonAverage(node->children[k], total, count);
+			poissonAverage(node->children[k], total);
 		}
 	}
 }
@@ -1523,16 +1522,10 @@ void runPoissonTest() {
 		i++;
 		printf("residual after %d vcycles: %f\n", i, runVCycle());
 		double total = 0.0;
-		int count = 0;
 		double K = 0.0;
-		//if (poissonTestFunc == POISSONCOSKL) {
-			poissonAverage(root, &total, &count);
-			K = total/count;
-			total = 0.0;
-			count = 0;
-		//}
-		computePoissonError(root, K, &total, &count);
-		double avgError = total / count;
+		poissonAverage(root, &K);
+		double avgError = 0.0;
+		computePoissonError(root, K, &avgError);
 		printf("average error after %d vcycles: %f\n", i, avgError);
 
 		//if (i == 10) break;
