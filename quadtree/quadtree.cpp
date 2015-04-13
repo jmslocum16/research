@@ -136,7 +136,28 @@ double corner1coords[4][2] = {{0, 0}, {1, 0}, {0, 0}, {0, 1}};
 double corner2coords[4][2] = {{0, 1}, {1, 1}, {1, 0}, {1, 1}};
 
 // utility functions
-std::pair<double, double> getGradient(double vals[], int sizes[], int size) {
+// assumes xc = 0, uses derivative of quadratic approximation
+double getApproxQuadraticDerivative(double xl, double xh, double yl, double yc, double yh, double targetX) {
+	assert(xl < 0 && xh > 0 && xl < targetX && xh > targetX);
+	double d2 = 2 * ((yh-yc)/xh + (yc-yl)/xl) / (xh-xl);
+	// d1 = either (yh-yc)/(xh) - d2/2*xh or -(yc-yl)/xl - d2/2*xl)
+	// can use more accurate one. Mathematically more accurate when distance from origin bigger, but could also try using the one target is on
+	double d1;
+	if (xh > -xl /* targetX > 0 */) {
+		d1 = (yh-yc)/xh - d2*xh/2;
+	} else {
+		d1 = -(yc-yl)/xl - d2*xl/2;
+	}
+	return d1 + d2*targetX;
+}
+
+std::pair<double, double> getQuadraticGradient(double vals[], int sizes[], double val, int size) {
+	double dx = getApproxQuadraticDerivative(-0.5/size-0.5/sizes[3], 0.5/size+0.5/sizes[2], vals[3], val, vals[2], 0.0);
+	double dy = getApproxQuadraticDerivative(-0.5/size-0.5/sizes[1], 0.5/size+0.5/sizes[0], vals[1], val, vals[0], 0.0);
+	return std::make_pair(dx, dy);
+}
+
+std::pair<double, double> getLinearGradient(double vals[], int sizes[], int size) {
 	// grad = a - b / (dist) = (a - b) / ((1/sizea) / 2 + (1/sizeb) / 2 + 1/size) = (a - b) / (.5/sizea + .5/sizeb + size)
 	return std::make_pair((vals[2] - vals[3])/(0.5/sizes[2] + 0.5/sizes[3] + 1.0/size), (vals[0]-vals[1])/(0.5/sizes[0] + 0.5/sizes[1] + 1.0/size));	
 }
@@ -342,7 +363,7 @@ class qNode {
 				sizes[k] = 1<<ml;
 			}
 			
-			return getGradient(vals, sizes, 1<<level);
+			return getLinearGradient(vals, sizes, 1<<level);
 		}
 
 		std::pair<double, double> getValueGradient(NodeValue v) {
@@ -354,7 +375,7 @@ class qNode {
 				vals[k] = getValueInDir(k, v, &ml);
 				sizes[k] = 1<<ml;
 			}
-			return getGradient(vals, sizes, 1<<level);
+			return getLinearGradient(vals, sizes, 1<<level);
 		}
 		
 		// curl(F) = d(Fy)/dx - d(Fx)/dy
@@ -1591,12 +1612,46 @@ double getRealDerivative(double x, double y, int k) {
 double calculateError(qNode* node, double* avgError) {
 	if (node->leaf) {
 		int size = 1<<node->level;
+		double vals[4];
+		int sizes[4];
+		for (int k = 0; k < 4; k++) {
+			int ml = levels - 1;
+			vals[k] = node->getValueInDir(k, P, &ml);
+			sizes[k] = 1<<ml;
+		}
+		double grads[4];
+
+		// x
+		double xl = -0.5/size - 0.5/sizes[3];
+		double xh = 0.5/size + 0.5/sizes[2];
+		if (sizes[2] == size) {
+			grads[2] = (vals[2] - node->p)*size;
+		} else {
+			grads[2] = getApproxQuadraticDerivative(xl, xh, vals[3], node->p, vals[2], 0.5/size);
+		}
+		if (sizes[3] == size) {
+			grads[3] = (vals[3] - node->p)*size;
+		} else {	
+			grads[3] = getApproxQuadraticDerivative(xl, xh, vals[3], node->p, vals[2], -0.5/size);
+		}
+
+		// y
+		double yl = -0.5/size - 0.5/sizes[1];
+		double yh = 0.5/size + 0.5/sizes[0];
+		if (sizes[0] == size) {
+			grads[0] = (vals[0] - node->p)*size;
+		} else {
+			grads[0] = getApproxQuadraticDerivative(yl, yh, vals[1], node->p, vals[0], 0.5/size);
+		}
+		if (sizes[1] == size) {
+			grads[1] = (vals[1] - node->p)*size;
+		} else {	
+			grads[1] = getApproxQuadraticDerivative(yl, yh, vals[1], node->p, vals[0], -0.5/size);
+		}
+
 		for (int k = 0; k < 4; k++) {
 			// calculate gradient in direction k
-			int ml = levels - 1;
-			double otherp = node->getValueInDir(k, P, &ml);
-			double h = 0.5/size + 0.5/(1<<ml);
-			double calc = (otherp - node->p) / h;
+			double calc = grads[k];
 			
 			double x = (node->j + 0.5 + 0.5*deltas[k][1])/size;
 			double y = (node->i + 0.5 + 0.5*deltas[k][0])/size;
@@ -1607,12 +1662,12 @@ double calculateError(qNode* node, double* avgError) {
 			}
 			double error = fabs(real - calc);
 			printf("Error for node %d: (%d, %d) in dir %d, ", node->level, node->i, node->j, k);
-			if (ml == node->level) {
+			if (sizes[k] == 1<<node->level) {
 				printf(" at the same level = %f\n", error);
-			} else if (ml < node->level) {
-				printf(" up %d levels = %f\n", node->level - ml, error);
+			} else if (sizes[k] < 1<<node->level) {
+				printf(" up = %f\n",  error);
 			} else {
-				printf(" down %d levels = %f\n", ml - node->level, error);
+				printf(" down = %f\n",  error);
 			}
 			*avgError += error/size/size;
 			return error;
