@@ -110,7 +110,7 @@ int numParticles;
 Particle* particles;
 
 // start state stuff
-enum StartState { LEFT, SINK, SRCSINK, POISSONTEST, ADAPTTEST };
+enum StartState { LEFT, SINK, SRCSINK, POISSONTEST, ADAPTTEST , ERRORTEST };
 StartState startState;
 enum AdaptScheme { ADAPTNONE, CURL, PGRAD };
 AdaptScheme adaptScheme = ADAPTNONE;
@@ -118,6 +118,8 @@ enum AdaptTestFunc { ADAPTFUNCNONE, ADAPTXY, ADAPTSIN, PARABOLA };
 AdaptTestFunc adaptTestFunc = ADAPTFUNCNONE;
 enum PoissonTestFunc { POISSONFUNCNONE, POISSONXY, POISSONCOS, POISSONCOSKL };
 PoissonTestFunc poissonTestFunc = POISSONFUNCNONE;
+enum ErrorTestFunc { ERRORFUNCNONE, ERRORXY, ERRORCOS, ERRORCOSKL };
+ErrorTestFunc errorTestFunc = ERRORFUNCNONE;
 
 double dt = .03;
 
@@ -1380,7 +1382,7 @@ void initPoissonTest(qNode* node) {
 }
 
 void initNodeFunction(qNode* node) {
-	if (startState == LEFT || startState == ADAPTTEST)
+	if (startState == LEFT || startState == ADAPTTEST || startState == ERRORTEST)
 		initNodeLeftUniform(node);
 	else if (startState == SINK)
 		initNodeSink(node);
@@ -1537,6 +1539,109 @@ void runPoissonTest() {
 	printPressure();
 }
 
+
+
+void setErrorPressure(qNode* node) {
+	int size = 1<<node->level;
+	double x = (node->j + 0.5)/size;
+	double y = (node->i + 0.5)/size;
+
+	if (errorTestFunc == ERRORXY) {
+		double newy = 2*y+1;
+		node->p = (2*x*x*x - 3*x*x + 1)  *  (newy*newy*newy*newy - 2*newy*newy + 1);
+	} else if (errorTestFunc == ERRORCOS) {
+		node->p = (1-cos(M_PI * 2 * x)) * (1-cos(M_PI * 2 * y));	
+	} else if (errorTestFunc == ERRORCOSKL) {
+		int k = 3;
+		int l = 3;
+		node->p = cos(M_PI * k * x) * cos(M_PI * l * y);
+	} else {
+		assert(false);
+	}
+		
+	if (!node->leaf) {
+		for (int k = 0; k < 4; k++) {
+			setErrorPressure(node->children[k]);
+		}
+	}
+}
+
+double getRealDerivative(double x, double y, int k) {
+	if (errorTestFunc == ERRORXY) {
+		if (k < 2) // y partial
+			return 0.0;
+		else // x partial
+			return 0.0;
+	} else if (errorTestFunc == ERRORCOS) {
+		if (k < 2) // y partial
+			return 2*M_PI*sin(2*M_PI*y) - 2*M_PI*cos(2*M_PI*x)*sin(2*M_PI*y);
+		else // x partial
+			return 2*M_PI*sin(2*M_PI*x) - 2*M_PI*sin(2*M_PI*x)*cos(2*M_PI*y);
+	} else if (errorTestFunc == ERRORCOSKL) {
+		int k = 3;
+		int l = 3;
+		if (k < 2) // y partial
+			return -M_PI*l*cos(M_PI*k*x)*sin(M_PI*l*y);
+		else //x partial
+			return -M_PI*k*sin(M_PI*k*x)*cos(M_PI*l*y);
+	}
+	assert(false);
+}
+
+double calculateError(qNode* node, double* avgError) {
+	if (node->leaf) {
+		int size = 1<<node->level;
+		for (int k = 0; k < 4; k++) {
+			// calculate gradient in direction k
+			int ml = levels - 1;
+			double otherp = node->getValueInDir(k, P, &ml);
+			double h = 0.5/size + 0.5/(1<<ml);
+			double calc = (otherp - node->p) / h;
+			
+			double x = (node->j + 0.5 + 0.5*deltas[k][1])/size;
+			double y = (node->i + 0.5 + 0.5*deltas[k][0])/size;
+			double real = getRealDerivative(x, y, k);
+			if (k % 2 == 1) {
+				// switch directions because other way
+				real = -real;
+			}
+			double error = fabs(real - calc);
+			printf("Error for node %d: (%d, %d) in dir %d, ", node->level, node->i, node->j, k);
+			if (ml == node->level) {
+				printf(" at the same level = %f\n", error);
+			} else if (ml < node->level) {
+				printf(" up %d levels = %f\n", node->level - ml, error);
+			} else {
+				printf(" down %d levels = %f\n", ml - node->level, error);
+			}
+			*avgError += error/size/size;
+			return error;
+		}
+	} else {
+		double maxError = 0.0;
+		for (int k = 0; k < 4; k++) {
+			maxError = fmax(maxError, calculateError(node->children[k], avgError));
+		}
+		return maxError;
+	}
+}
+
+void runErrorTest() {
+	//adapt
+	if (adaptScheme != ADAPTNONE) {
+		expandRadius(root, .3);
+		expandRadius(root, .2);
+	}
+
+	// set initial pressure values
+	setErrorPressure(root);
+	
+	double avgError = 0.0;
+	// do calculations
+	double maxError = calculateError(root, &avgError);
+	printf("maximum error: %f, average error: %f\n", maxError, avgError);
+}
+
 void setAdaptTestValues(qNode* node) {
 	// sets velocity for rendering n shit
 	int size = 1<<node->level;
@@ -1588,7 +1693,7 @@ void initSim() {
 	oldRoot = new qNode(NULL, 0, 0);
 
 	int startLevel = levels - 2;
-	if (startState == POISSONTEST) {
+	if (startState == POISSONTEST || startState == ERRORTEST) {
 		if (adaptScheme == ADAPTNONE)
 			startLevel = levels - 1;
 		else
@@ -1604,6 +1709,9 @@ void initSim() {
 		return;
 	} else if (startState == ADAPTTEST) {
 		runAdaptTest();
+		return;
+	} else if (startState == ERRORTEST) {
+		runErrorTest();
 		return;
 	}
 
@@ -1730,6 +1838,8 @@ int main(int argc, char** argv) {
 				poissonTestFunc = POISSONCOS;
 			} else if (!strcmp("coskl", func)) {
 				poissonTestFunc = POISSONCOSKL;
+			} else {
+				return 1;
 			}
 		} else if (!strcmp("adapttest", arg)) {
 			startState = ADAPTTEST;
@@ -1740,7 +1850,22 @@ int main(int argc, char** argv) {
 				adaptTestFunc = ADAPTSIN;
 			} else if (!strcmp("parabola", func)) {
 				adaptTestFunc = PARABOLA;
+			} else {
+				return 1;
 			}
+		} else if (!strcmp("errortest", arg)) {
+			startState = ERRORTEST;
+			char* func = argv[++i];
+			if (!strcmp("xy", func)) {
+				errorTestFunc = ERRORXY;
+			} else if (!strcmp("cos", func)) {
+				errorTestFunc = ERRORCOS;
+			} else if (!strcmp("coskl", func)) {
+				errorTestFunc = ERRORCOSKL;
+			} else {
+				return 1;
+			}
+			
 		}
 	}
 	//levelToDisplay = levels/2;
