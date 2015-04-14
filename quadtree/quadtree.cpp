@@ -23,7 +23,7 @@
 bool doneVCycle = false;
 
 int MAX_RELAX_COUNT = 20;
-int OPTIMIZED_RELAX_COUNT = 4;
+int OPTIMIZED_RELAX_COUNT = /*4*/ MAX_RELAX_COUNT;
 
 double eps = .0001;
 
@@ -143,7 +143,7 @@ double getApproxQuad(double xl, double xh, double yl, double yc, double yh, doub
 	// d1 = either (yh-yc)/(xh) - d2/2*xh or -(yc-yl)/xl - d2/2*xl)
 	// can use more accurate one. Mathematically more accurate when distance from origin bigger, but could also try using the one target is on
 	double d1;
-	if (xh > -xl /* targetX > 0 */) {
+	if (targetX > 0) {
 		d1 = (yh-yc)/xh - d2*xh/2;
 	} else {
 		d1 = -(yc-yl)/xl - d2*xl/2;
@@ -354,16 +354,7 @@ class qNode {
 		// utility functions
 		
 		std::pair<double, double> getVelocityGradient() {
-		    double vals[4];
-			int sizes[4];
-		
-			for (int k = 0; k < 4; k++) {
-				int ml = leaf ? levels - 1 : level;
-				vals[k] = getValueInDir(k, (k < 2) ? VY : VX, &ml);
-				sizes[k] = 1<<ml;
-			}
-			
-			return getLinearGradient(vals, sizes, 1<<level);
+			return std::make_pair(getValueGradient(VX).first, getValueGradient(VY).second);
 		}
 
 		std::pair<double, double> getValueGradient(NodeValue v) {
@@ -375,7 +366,7 @@ class qNode {
 				vals[k] = getValueInDir(k, v, &ml);
 				sizes[k] = 1<<ml;
 			}
-			return getLinearGradient(vals, sizes, 1<<level);
+			return getQuadraticGradient(vals, sizes, getVal(v), 1<<level);
 		}
 		
 		// curl(F) = d(Fy)/dx - d(Fx)/dy
@@ -413,20 +404,18 @@ class qNode {
 		std::pair<double, double> getVelocityAt(double x, double y) {
 			return std::make_pair(getValueAt(x, y, VX), getValueAt(x, y, VY));
 		}
+
+		double getVal(NodeValue v) {
+			if (v == P) return p;
+			else if (v == VX) return vx;
+			else if (v == VY) return vy;
+			else if (v == PHI) return phi;
+			else if (v == DP) return dp;
+		}
 		
 		double getValueAt(double x, double y, NodeValue v) {
-			double val;
-			if (v == P)
-				val = p;
-			else if (v == VX)
-				val = vx;
-			else if (v == VY)	
-				val = vy;
-			else if (v == PHI)
-				val = phi;
-			else if (v == DP)
-				val = dp;
-    		//std::pair<double, double> grad = getValueGradient(v);
+			double val = getVal(v);
+		    //std::pair<double, double> grad = getValueGradient(v);
 			int size = 1<<level;
 			double dx = x - (j + 0.5)/size;
 			double dy = y - (i + 0.5)/size;
@@ -871,16 +860,46 @@ double computeResidual(qNode* node) {
 	if (node->leaf) { // if leaf cell, compute residual
 		// compute it: R = div(vx, vy) - 1/(ha)*sum of (s * grad) for each face
 		double faceGradSum = 0.0;
+
+		double vals[4];
+		int sizes[4];
 		for (int k = 0; k < 4; k++) {
-			int level = levels - 1; // residual is computed at largest multilevel only.
-			//std::pair<qNode*, qNode*> neighbor = node->getNeighborInDir(k, &level);
-			//double neighborp = (neighbor.second == NULL) ? neighbor.first->p : (neighbor.first->p + neighbor.second->p) / 2.0;
-			double neighborp = node->getValueInDir(k, P, &level);
-			int neighborsize = 1 << level;
-			// integral around the edge of flux, or side length * face gradient
-			//faceGradSum += 1 * (neighbor.p - this.p)/ (0.5/size + 0.5/neighborsize);
-			faceGradSum += (neighborp - node->p) / (0.5/size + 0.5/neighborsize);
+			int ml = levels - 1;
+			vals[k] = node->getValueInDir(k, P, &ml);
+			sizes[k] = 1<<ml;
 		}
+
+		double xl = -0.5/size - 0.5/sizes[3];
+		double xh = 0.5/size + 0.5/sizes[2];
+		if (sizes[2] == size) {
+			faceGradSum += (vals[2] - node->p)*size;
+		} else {
+			faceGradSum += getApproxQuad(xl, xh, vals[3], node->p, vals[2], 0.5/size);
+		}
+		double dif =  fabs((vals[2] - node->p)*size - getApproxQuad(xl, xh, vals[3], node->p, vals[2], 0.5/size));
+		if (dif > 1) {
+			printf("gradient dif: %f\n", dif);
+		}
+		if (sizes[3] == size) {
+			faceGradSum += (vals[3] - node->p)*size;
+		} else {	
+			faceGradSum += getApproxQuad(xl, xh, vals[3], node->p, vals[2], -0.5/size);
+		}
+
+		// y
+		double yl = -0.5/size - 0.5/sizes[1];
+		double yh = 0.5/size + 0.5/sizes[0];
+		if (sizes[0] == size) {
+			faceGradSum += (vals[0] - node->p)*size;
+		} else {
+			faceGradSum += getApproxQuad(yl, yh, vals[1], node->p, vals[0], 0.5/size);
+		}
+		if (sizes[1] == size) {
+			faceGradSum += (vals[1] - node->p)*size;
+		} else {	
+			faceGradSum += getApproxQuad(yl, yh, vals[1], node->p, vals[0], -0.5/size);
+		}
+
 		// h = length of cell = 1.0/size
 		// a = "fluid volume fraction of the cell". Since no boundaries cutting through cell, always 1
 		
@@ -889,7 +908,7 @@ double computeResidual(qNode* node) {
 		double R = node->divV - flux;
 		
 		node->R = R;
-		//printf("at [%d][%d], divV: %f, flux: %f, R: %f\n", node->i, node->j, node->divV, flux, R);
+		printf("at [%d][%d], divV: %f, flux: %f, R: %f\n", node->i, node->j, node->divV, flux, R);
 		// if a*R > e, not done
 		if (fabs(R) > eps) {
 			doneVCycle = false;
@@ -923,19 +942,35 @@ bool relaxRecursive(qNode* node, int ml) {
         double dp;
         double h;
 		double oldDif = node->dp;
-		for (int k = 0; k < 4; k++) {
+		/*for (int k = 0; k < 4; k++) {
 			int level = ml;
-			/*std::pair<qNode*, qNode*> neighbor = node->getNeighborInDir(k, &level);
-			if (neighbor.second == NULL) {
-				dp = neighbor.first->dp;
-			} else {
-				dp = (neighbor.first->dp + neighbor.second->dp)/2.0;
-			}*/
 			dp = node->getValueInDir(k, DP, &level);
             h = 0.5 / size + 0.5 /(1<<level);
             aSum -= 1/h;
             bSum += dp/h;
+		}*/
+
+		double vals[4];
+		int sizes[4];
+		for (int k = 0; k < 4; k++) {
+			int level = ml;
+			vals[k] = node->getValueInDir(k, DP, &level);
+			sizes[k] = 1<<level;
 		}
+
+		// x
+		double a = 0.5/size + 0.5/sizes[2];
+		double b = 0.5/size + 0.5/sizes[3];
+		double AB = (a-b)/(a+b);
+		bSum += vals[2] * (1-AB)/a + vals[3] * (1-AB)/b;
+		aSum += (AB-1)/a + (AB-1)/b;
+	
+		// y
+		a = 0.5/size + 0.5/sizes[0];
+		b = 0.5/size + 0.5/sizes[1];
+		AB = (a-b)/(a+b);
+		bSum += vals[0] * (1-AB)/a + vals[1] * (1-AB)/b;
+		aSum += (AB-1)/a + (AB-1)/b;
 		
         // dp = (h*R - bsum)/asum
         node->temp = (node->R/size - bSum) / aSum;
@@ -985,7 +1020,7 @@ void relax(int d, int r) {
 
 	bool done = false;
     int totalCycles = 0;
-	while (r-- > 0/* && !done*/) {
+	while (/*r-- > 0*/!done) {
         totalCycles++;
 		done = relaxRecursive(root, d);
 		recursiveUpdate(root, d);
@@ -1222,7 +1257,9 @@ double runVCycle() {
 	
 	// re-compute residual
 	doneVCycle = true;
-	return computeResidual(root);
+	double maxResidual = computeResidual(root);
+	printf("max residual: %f\n", maxResidual);
+	return maxResidual;
 
 	// TODO REMOVE
 	// doneVCycle = true;
