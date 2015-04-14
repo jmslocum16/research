@@ -137,7 +137,7 @@ double corner2coords[4][2] = {{0, 1}, {1, 1}, {1, 0}, {1, 1}};
 
 // utility functions
 // assumes xc = 0, uses derivative of quadratic approximation
-double getApproxQuadraticDerivative(double xl, double xh, double yl, double yc, double yh, double targetX) {
+double getApproxQuad(double xl, double xh, double yl, double yc, double yh, double targetX) {
 	assert(xl < 0 && xh > 0 && xl < targetX && xh > targetX);
 	double d2 = 2 * ((yh-yc)/xh + (yc-yl)/xl) / (xh-xl);
 	// d1 = either (yh-yc)/(xh) - d2/2*xh or -(yc-yl)/xl - d2/2*xl)
@@ -152,8 +152,8 @@ double getApproxQuadraticDerivative(double xl, double xh, double yl, double yc, 
 }
 
 std::pair<double, double> getQuadraticGradient(double vals[], int sizes[], double val, int size) {
-	double dx = getApproxQuadraticDerivative(-0.5/size-0.5/sizes[3], 0.5/size+0.5/sizes[2], vals[3], val, vals[2], 0.0);
-	double dy = getApproxQuadraticDerivative(-0.5/size-0.5/sizes[1], 0.5/size+0.5/sizes[0], vals[1], val, vals[0], 0.0);
+	double dx = getApproxQuad(-0.5/size-0.5/sizes[3], 0.5/size+0.5/sizes[2], vals[3], val, vals[2], 0.0);
+	double dy = getApproxQuad(-0.5/size-0.5/sizes[1], 0.5/size+0.5/sizes[0], vals[1], val, vals[0], 0.0);
 	return std::make_pair(dx, dy);
 }
 
@@ -426,14 +426,24 @@ class qNode {
 				val = phi;
 			else if (v == DP)
 				val = dp;
-    		std::pair<double, double> grad = getValueGradient(v);
+    		//std::pair<double, double> grad = getValueGradient(v);
 			int size = 1<<level;
 			double dx = x - (j + 0.5)/size;
 			double dy = y - (i + 0.5)/size;
 			if (fabs(dx) > 0.5/size || fabs(dy) > 0.5/size) {
 				printf("dx: %f, dy: %f\n", dx, dy);
 			}
-			return val + dx * grad.first + dy * grad.second;
+			double vals[4];
+			int sizes[4];
+			for (int k = 0; k < 4; k++) {
+				int ml = leaf ? levels - 1 : level;
+				vals[k] = getValueInDir(k, v, &ml);
+				sizes[k] = 1<<ml;
+			}
+			double difX = dx*getApproxQuad(-0.5/size-0.5/sizes[3], 0.5/size+0.5/sizes[2], vals[3], val, vals[2], dx);
+			double difY = dy*getApproxQuad(-0.5/size-0.5/sizes[1], 0.5/size+0.5/sizes[0], vals[1], val, vals[0], dy);
+			//return val + dx * grad.first + dy * grad.second;
+			return val + difX + difY;
 		}
 
 		// adaptivity
@@ -1627,12 +1637,12 @@ double calculateError(qNode* node, double* avgError) {
 		if (sizes[2] == size) {
 			grads[2] = (vals[2] - node->p)*size;
 		} else {
-			grads[2] = getApproxQuadraticDerivative(xl, xh, vals[3], node->p, vals[2], 0.5/size);
+			grads[2] = getApproxQuad(xl, xh, vals[3], node->p, vals[2], 0.5/size);
 		}
 		if (sizes[3] == size) {
 			grads[3] = (vals[3] - node->p)*size;
 		} else {	
-			grads[3] = getApproxQuadraticDerivative(xl, xh, vals[3], node->p, vals[2], -0.5/size);
+			grads[3] = getApproxQuad(xl, xh, vals[3], node->p, vals[2], -0.5/size);
 		}
 
 		// y
@@ -1641,12 +1651,12 @@ double calculateError(qNode* node, double* avgError) {
 		if (sizes[0] == size) {
 			grads[0] = (vals[0] - node->p)*size;
 		} else {
-			grads[0] = getApproxQuadraticDerivative(yl, yh, vals[1], node->p, vals[0], 0.5/size);
+			grads[0] = getApproxQuad(yl, yh, vals[1], node->p, vals[0], 0.5/size);
 		}
 		if (sizes[1] == size) {
 			grads[1] = (vals[1] - node->p)*size;
 		} else {	
-			grads[1] = getApproxQuadraticDerivative(yl, yh, vals[1], node->p, vals[0], -0.5/size);
+			grads[1] = getApproxQuad(yl, yh, vals[1], node->p, vals[0], -0.5/size);
 		}
 
 		for (int k = 0; k < 4; k++) {
