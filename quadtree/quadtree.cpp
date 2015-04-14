@@ -23,7 +23,7 @@
 bool doneVCycle = false;
 
 int MAX_RELAX_COUNT = 20;
-int OPTIMIZED_RELAX_COUNT = /*4*/ MAX_RELAX_COUNT;
+int OPTIMIZED_RELAX_COUNT = 4;
 
 double eps = .0001;
 
@@ -163,7 +163,7 @@ std::pair<double, double> getLinearGradient(double vals[], int sizes[], int size
 }
 
 int nodeId = 0;
-enum NodeValue { P, VX, VY, PHI, DP};
+enum NodeValue { P, VX, VY, PHI, R, DP};
 class qNode {
 	public:
 		// tree stuffs
@@ -411,6 +411,7 @@ class qNode {
 			else if (v == VY) return vy;
 			else if (v == PHI) return phi;
 			else if (v == DP) return dp;
+			else if (v == R) return R;
 		}
 		
 		double getValueAt(double x, double y, NodeValue v) {
@@ -544,17 +545,17 @@ qNode*  getSemiLagrangianLookback(qNode* r, double* x, double* y, int steps, int
 }
 
 // not fast but who cares
-void printPressure() {
-	for (int d = 0; d < levels; d++) {
+void printValue(NodeValue v, int ml) {
+	for (int d = 0; d <= ml; d++) {
 		int size = 1<<d;
 		printf("level %d\n", d);
 		for (int i = 0; i < size; i++) {
 			for (int j = 0; j < size; j++) {
 				qNode* n = get(root, d, i, j);
 				if (n != NULL) {
-					printf(" %.4f", n->p);
+					printf(" %.8f", n->getVal(v));
 				} else {
-					printf("      ");
+					printf("          ");
 				}
 			}
 			printf("\n");
@@ -876,14 +877,10 @@ double computeResidual(qNode* node) {
 		} else {
 			faceGradSum += getApproxQuad(xl, xh, vals[3], node->p, vals[2], 0.5/size);
 		}
-		double dif =  fabs((vals[2] - node->p)*size - getApproxQuad(xl, xh, vals[3], node->p, vals[2], 0.5/size));
-		if (dif > 1) {
-			printf("gradient dif: %f\n", dif);
-		}
 		if (sizes[3] == size) {
 			faceGradSum += (vals[3] - node->p)*size;
 		} else {	
-			faceGradSum += getApproxQuad(xl, xh, vals[3], node->p, vals[2], -0.5/size);
+			faceGradSum -= getApproxQuad(xl, xh, vals[3], node->p, vals[2], -0.5/size);
 		}
 
 		// y
@@ -897,7 +894,7 @@ double computeResidual(qNode* node) {
 		if (sizes[1] == size) {
 			faceGradSum += (vals[1] - node->p)*size;
 		} else {	
-			faceGradSum += getApproxQuad(yl, yh, vals[1], node->p, vals[0], -0.5/size);
+			faceGradSum -= getApproxQuad(yl, yh, vals[1], node->p, vals[0], -0.5/size);
 		}
 
 		// h = length of cell = 1.0/size
@@ -908,7 +905,7 @@ double computeResidual(qNode* node) {
 		double R = node->divV - flux;
 		
 		node->R = R;
-		printf("at [%d][%d], divV: %f, flux: %f, R: %f\n", node->i, node->j, node->divV, flux, R);
+		//printf("at [%d][%d], divV: %f, flux: %f, R: %f\n", node->i, node->j, node->divV, flux, R);
 		// if a*R > e, not done
 		if (fabs(R) > eps) {
 			doneVCycle = false;
@@ -973,8 +970,10 @@ bool relaxRecursive(qNode* node, int ml) {
 		aSum += (AB-1)/a + (AB-1)/b;
 		
         // dp = (h*R - bsum)/asum
-        node->temp = (node->R/size - bSum) / aSum;
-		double diff = oldDif - node->temp;
+        //node->temp = (node->R/size - bSum) / aSum;
+		node->dp = (node->R/size - bSum)/aSum;
+		//double diff = oldDif - node->temp;
+		double diff = oldDif - node->dp;
 
         //printf("relaxing[%d][%d][%d]: aSum: %f, bSumL %f, R: %f, result: %f, diff from old: %f\n", d, i, j, aSum, bSum, grid[d][i*size+j].R, grid[d][i*size+j].temp, diff);
 		if (fabs(diff) > eps) {
@@ -1003,6 +1002,7 @@ void recursiveInject(qNode* node, int ml) {
 }
 
 void recursiveUpdate(qNode* node, int ml) {	
+	return;
 	node->dp = node->temp;
 	if (!node->leaf) {
 		for (int k = 0; k < 4; k++) {
@@ -1018,27 +1018,20 @@ void relax(int d, int r) {
 	// get initial gress from previous level, if possible
 	recursiveInject(root, d);
 
+	//printf("residual: \n");
+	//printValue(R, d);
+
 	bool done = false;
     int totalCycles = 0;
-	while (/*r-- > 0*/!done) {
+	while (r-- > 0/*!done*/) {
         totalCycles++;
 		done = relaxRecursive(root, d);
 		recursiveUpdate(root, d);
+		//printValue(DP, d);
 	}
 	//printf("dp matrix with %d cycles left: \n", r);
-    /*printf("relaxing took %d cycles\n", totalCycles);
-    for (d = 0; d <= maxlevel; d++) {
-        int size = 1<<d;
-        //printf("level %d\n", d);
-        for (int i = 0; i < size; i++) {
-            for (int j = 0; j < size; j++) {
-                if (grid[d][i*size+j].used) {
-                    //printf(" %.4f", grid[d][i*size+j].dp);
-                }
-            }
-            //printf("\n");
-        }
-    }*/
+    //printf("relaxing took %d cycles\n", totalCycles);
+	//printValue(DP, d);
 }
 
 // adaptivity
@@ -1175,10 +1168,10 @@ void advectAndCopy(qNode* node, qNode* oldNode) {
 }
 
 void correctPressure(qNode* node) {
-	//node->p += node->dp;
+	node->p += node->dp;
 	if (node->leaf) {
 		//printf("at node %d (%d, %d) correcting pressure %f by %f\n", node->level, node->i, node->j, node->p, node->dp);
-		node->p += node->dp;
+		//node->p += node->dp;
 	} else {
 		for (int k = 0; k < 4; k++) {
 			correctPressure(node->children[k]);
@@ -1307,7 +1300,8 @@ void runStep() {
 
 	// compute all residuals, so that the whole bottom multilevel is computed
 	doneVCycle = true;
-	computeResidual(root);
+	double oldResidual;
+	double newResidual = computeResidual(root);
 
 	int numCycles = 0;
 	
@@ -1315,7 +1309,9 @@ void runStep() {
 		numCycles++;
 		//printf("start v cycle %d\n", numCycles);
 
-		runVCycle();	
+		oldResidual = newResidual;
+		newResidual = runVCycle();	
+		doneVCycle |= fabs(oldResidual-newResidual)/newResidual < eps;
 	}
 	printf("end poisson solver, took %d cycles\n", numCycles);
 	totalTime += endTime("poisson solver");
@@ -1324,7 +1320,7 @@ void runStep() {
 	printf ("doing adaptivity\n");
 	startTime();
     // given new state, do adaptivity
-	if (adaptScheme != ADAPTNONE) {
+	if (adaptScheme != ADAPTNONE && startState != POISSONTEST) {
 		std::swap(root, oldRoot);
 		recursiveAdaptAndCopy(root, oldRoot);
 	}
@@ -1382,7 +1378,7 @@ void runStep() {
 			printf("\n");
 		}
 	}*/
-	//printPressure();
+	//printValue(P, levels - 1);
 
 	// increase frame number here instead of in display so that you get 1 of each frame, not dependent on glut's redrawing, like on alt-tabbing or anything
 	frameNumber++;
@@ -1492,7 +1488,8 @@ void initRecursive(qNode* node, int d) {
 void poissonReset(qNode* node) {
 	//node->p = 0;
 	int size = 1<<node->level;
-	node->p = 1.0/size/size/12;
+	//node->p = 1.0/size/size/12;
+	node->p = 1.0;
 	if (node->leaf) {
 		double x = (node->j + 0.5)/size;
 		double y = (node->i + 0.5)/size;
@@ -1570,6 +1567,16 @@ void expandRadius(qNode* node, double radius) {
 	}
 }
 
+// gets rid of integration constant on pressure
+void poissonCorrect(qNode* node, double K) {
+	node->p -= K;
+	if (!node->leaf) {
+		for (int k = 0; k < 4; k++) {
+			poissonCorrect(node->children[k], K);
+		}
+	}
+}
+
 void runPoissonTest() {
 	// adapt
 	if (adaptScheme != ADAPTNONE) {
@@ -1588,11 +1595,17 @@ void runPoissonTest() {
 	int i = 0;
 
 	startTime();
+	double newResidual = -1.0;
+	double oldResidual;
+	double K;
 	while (!doneVCycle) {
 		i++;
-		printf("residual after %d vcycles: %f\n", i, runVCycle());
+		oldResidual = newResidual;
+		newResidual = runVCycle();
+		doneVCycle = fabs(oldResidual-newResidual)/newResidual < eps/100 || newResidual < eps;
+		printf("residual after %d vcycles: %f\n", i, newResidual);
 		double total = 0.0;
-		double K = 0.0;
+		K = 0.0;
 		poissonAverage(root, &K);
 		double avgError = 0.0;
 		computePoissonError(root, K, &avgError);
@@ -1604,7 +1617,11 @@ void runPoissonTest() {
 	
 	printf("poisson test took %d vcycles\n", i);
 
-	printPressure();
+
+	printf("correcting ending pressure by constant %f\n", K);
+	poissonCorrect(root, K);
+
+	//printValue(P, levels-1);
 }
 
 
@@ -1679,7 +1696,7 @@ double calculateError(qNode* node, double* avgError) {
 		if (sizes[3] == size) {
 			grads[3] = (vals[3] - node->p)*size;
 		} else {	
-			grads[3] = getApproxQuad(xl, xh, vals[3], node->p, vals[2], -0.5/size);
+			grads[3] = -getApproxQuad(xl, xh, vals[3], node->p, vals[2], -0.5/size);
 		}
 
 		// y
@@ -1693,9 +1710,10 @@ double calculateError(qNode* node, double* avgError) {
 		if (sizes[1] == size) {
 			grads[1] = (vals[1] - node->p)*size;
 		} else {	
-			grads[1] = getApproxQuad(yl, yh, vals[1], node->p, vals[0], -0.5/size);
+			grads[1] = -getApproxQuad(yl, yh, vals[1], node->p, vals[0], -0.5/size);
 		}
 
+		double maxError = 0.0;
 		for (int k = 0; k < 4; k++) {
 			// calculate gradient in direction k
 			double calc = grads[k];
@@ -1716,9 +1734,10 @@ double calculateError(qNode* node, double* avgError) {
 			} else {
 				printf(" down = %f\n",  error);
 			}
-			*avgError += error/size/size;
-			return error;
+			*avgError += error/size/size/4;
+			maxError  = fmax(maxError, error);
 		}
+		return maxError;
 	} else {
 		double maxError = 0.0;
 		for (int k = 0; k < 4; k++) {
@@ -1816,7 +1835,7 @@ void initSim() {
 		runErrorTest();
 		return;
 	}
-
+	
 	clampVelocity(root);
 
 	if (particleAlgorithm != PARTICLENONE) {
