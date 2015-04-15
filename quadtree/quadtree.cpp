@@ -223,6 +223,37 @@ class qNode {
 			}
 		}
 
+		double getVal(NodeValue v) {
+			if (v == DP) return dp;
+			else if (v == P) return p;
+			assert(false);
+		}
+
+		// note: k is opposite of way used to get there, for example if k in original was (1, 0), this k is (-1, 0)
+		void addFaceToLaplacian(qNode* original, int ml, int k, double* aSum, double* bSum, NodeValue v) {
+			if (leaf || level == ml) {
+				int origSize = 1<<original->level;
+				int size = 1<<level;
+				double dside = fmin(1.0/origSize, 1.0/size);
+				double h = 0.5/origSize + 0.5/size;
+				double d = dside/h;
+				*aSum -= d;
+				*bSum += d*getVal(v);
+			} else {
+				if (k < 2) { // y dir
+					int targetI = 1 - k;
+					for (int j = 0; j < 2; j++) {
+						children[targetI*2+j]->addFaceToLaplacian(original, ml, k, aSum, bSum, v);
+					}
+				} else {
+					int targetJ = 3 - k;
+					for (int i = 0; i < 2; i++) {
+						children[2*i+targetJ]->addFaceToLaplacian(original, ml, k, aSum, bSum, v);
+					}
+				}
+			}
+		}
+
 		double getValueInDir(int k, NodeValue v, int* ml) {
 			std::pair<qNode*, qNode*> neighbor = getNeighborInDir(k, ml);
 			double val;
@@ -842,16 +873,11 @@ double computeResidual(qNode* node) {
 		double faceGradSum = 0.0;
 		for (int k = 0; k < 4; k++) {
 			int level = levels - 1; // residual is computed at largest multilevel only.
-			//std::pair<qNode*, qNode*> neighbor = node->getNeighborInDir(k, &level);
-			//double neighborp = (neighbor.second == NULL) ? neighbor.first->p : (neighbor.first->p + neighbor.second->p) / 2.0;
 			double neighborp = node->getValueInDir(k, P, &level);
 			int neighborsize = 1 << level;
 			// integral around the edge of flux, or side length * face gradient
-			//faceGradSum += 1 * (neighbor.p - this.p)/ (0.5/size + 0.5/neighborsize);
 			faceGradSum += (neighborp - node->p) / (0.5/size + 0.5/neighborsize);
 		}
-		// h = length of cell = 1.0/size
-		// a = "fluid volume fraction of the cell". Since no boundaries cutting through cell, always 1
 		
 		// double flux = 1/ha * faceGradSum = 1/(1/size * 1) * faceGradSum = size * faceGradSum;
 		double flux = size * faceGradSum;
@@ -886,28 +912,45 @@ bool relaxRecursive(qNode* node, int ml) {
 	assert (node->level <= ml);
 	int size = 1<<node->level;
 	if (node->level == ml || node->leaf) {
-        // dp = (h*a*divV - bsum)/asum
 		double aSum = 0.0;
         double bSum = 0.0;
         double dp;
         double h;
 		double oldDif = node->dp;
+		double aSum2 = 0.0;
+		double bSum2 = 0.0;
 		for (int k = 0; k < 4; k++) {
 			int level = ml;
-			/*std::pair<qNode*, qNode*> neighbor = node->getNeighborInDir(k, &level);
-			if (neighbor.second == NULL) {
-				dp = neighbor.first->dp;
-			} else {
-				dp = (neighbor.first->dp + neighbor.second->dp)/2.0;
-			}*/
 			dp = node->getValueInDir(k, DP, &level);
             h = 0.5 / size + 0.5 /(1<<level);
-            aSum -= 1/h;
-            bSum += dp/h;
+            aSum2 -= 1/h;
+            bSum2 += dp/h;
+		}
+
+		for (int k = 0; k < 4; k++) {
+			int oppositeK = 1 - (k%2);
+			qNode* n = node;
+			while (n != NULL && n->neighbors[k] == NULL) n = n->parent;
+			if (n != NULL) {
+				n->neighbors[k]->addFaceToLaplacian(node, ml, oppositeK, &aSum, &bSum, DP);
+			} else {
+				aSum -= 1;
+				bSum += node->dp;
+			}
 		}
 		
-        // dp = (h*R - bsum)/asum
-        node->temp = (node->R/size - bSum) / aSum;
+		// node->temp = (node->R/size - bSum) / aSum;
+        // A*R = bSum - aSum*dp, dp = (bSum - A*R)/asum, A = h*h = 1/size^2
+		node->temp = -(bSum - node->R/size/size)/aSum;
+
+		//printf("old dp: bSum: %f, aSum: %f, R: %f\n", bSum2, aSum2, node->R);
+		//printf("new dp: bSum: %f, aSum: %f, R: %f\n", bSum, aSum, node->R);
+		double oldDp = (node->R/size - bSum2)/aSum2;
+		double newDp = node->temp;
+
+		/*if (oldDp != newDp) {
+			printf("[%d](%d,%d) old dp: %f, new dp: %f\n", node->level, node->i, node->j, (node->R/size - bSum2)/aSum2, node->temp);
+		}*/
 		double diff = oldDif - node->temp;
 
         //printf("relaxing[%d][%d][%d]: aSum: %f, bSumL %f, R: %f, result: %f, diff from old: %f\n", d, i, j, aSum, bSum, grid[d][i*size+j].R, grid[d][i*size+j].temp, diff);
@@ -1247,7 +1290,8 @@ void runStep() {
 		numCycles++;
 		//printf("start v cycle %d\n", numCycles);
 
-		runVCycle();	
+		double residual = runVCycle();	
+		printf("residual after %d cycles: %f\n", numCycles, residual);
 	}
 	printf("end poisson solver, took %d cycles\n", numCycles);
 	totalTime += endTime("poisson solver");
@@ -1519,10 +1563,15 @@ void runPoissonTest() {
 	// run V cycles, compute stuff
 	int i = 0;
 
+	double newR, oldR;
+	newR = initialResidual;
+
 	startTime();
 	while (!doneVCycle) {
 		i++;
-		printf("residual after %d vcycles: %f\n", i, runVCycle());
+		oldR = newR;
+		newR = runVCycle();
+		printf("residual after %d vcycles: %f\n", i, newR);
 		double total = 0.0;
 		double K = 0.0;
 		poissonAverage(root, &K);
@@ -1530,7 +1579,7 @@ void runPoissonTest() {
 		computePoissonError(root, K, &avgError);
 		printf("average error after %d vcycles: %f\n", i, avgError);
 
-		//if (i == 10) break;
+		//doneVCycle |= fabs(newR-oldR) < eps/100;
 	}
 	endTime("poisson test");
 	
