@@ -1479,8 +1479,8 @@ void poissonReset(qNode* node) {
 			double cy = cos(M_PI*2*y);
 			node->divV = 4*M_PI*M_PI * (cx + cy - 2*cx*cy);
 		} else if (poissonTestFunc == POISSONCOSKL) {
-			int k = 3;
-			int l = 3;
+			int k = 2;
+			int l = 2;
 			node->divV = -M_PI*M_PI*(k*k + l*l)*cos(M_PI*k*x)*cos(M_PI*l*y);
 		} else {
 			assert(false);
@@ -1505,8 +1505,8 @@ void computePoissonError(qNode* node, double K, double* total) {
 		} else if (poissonTestFunc == POISSONCOS) {
 			correct += (1-cos(M_PI * 2 * x)) * (1-cos(M_PI * 2 * y));
 		} else if (poissonTestFunc == POISSONCOSKL) {
-			int k = 3;
-			int l = 3;
+			int k = 2;
+			int l = 2;
 			correct += cos(M_PI * k * x) * cos(M_PI * l * y);
 		} else {
 			assert(false);
@@ -1546,6 +1546,34 @@ void expandRadius(qNode* node, double radius) {
 	}
 }
 
+void poissonAverageR(qNode* node, double* total) {
+	if (node->leaf) {
+		int size = 1<<node->level;
+		*total += node->R / size / size;
+	} else {
+		for (int k = 0; k < 4; k++) {
+			poissonAverageR(node->children[k], total);
+		}
+	}
+}
+
+void poissonCorrectR(qNode* node, double K) {
+	node->R -= K;
+	if (!node->leaf) {
+		for (int k = 0; k < 4; k++) {
+			poissonCorrectR(node->children[k], K);
+		}
+	}
+}
+
+double getMaxR(qNode* node) {
+	if (node->leaf)	return fabs(node->R);
+	double max = 0.0;
+	for (int k = 0; k < 4; k++)
+		max = fmax(max, getMaxR(node->children[k]));
+	return max;
+}
+
 void runPoissonTest() {
 	// adapt
 	if (adaptScheme != ADAPTNONE) {
@@ -1559,6 +1587,12 @@ void runPoissonTest() {
 	
 	double initialResidual = computeResidual(root);
 	printf("initial residual: %f\n", initialResidual);
+
+	// try manually fixing residual
+	double avgR = 0.0;
+	poissonAverageR(root, &avgR);
+	printf("new average residual: %f\n", avgR);
+	poissonCorrectR(root, avgR);
 	
 	// run V cycles, compute stuff
 	int i = 0;
@@ -1579,7 +1613,16 @@ void runPoissonTest() {
 		computePoissonError(root, K, &avgError);
 		printf("average error after %d vcycles: %f\n", i, avgError);
 
+		// try manually fixing residual
+		avgR = 0.0;
+		poissonAverageR(root, &avgR);
+		printf("new average residual: %f\n", avgR);
+		poissonCorrectR(root, avgR);
+		avgR = 0.0;
+		poissonAverageR(root, &avgR);
+		printf("average R after correction: %f\n", avgR);
 		//doneVCycle |= fabs(newR-oldR) < eps/100;
+		doneVCycle = getMaxR(root) < eps;
 	}
 	endTime("poisson test");
 	
