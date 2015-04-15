@@ -1244,6 +1244,47 @@ double runVCycle() {
 
 }
 
+void poissonAverageR(qNode* node, double* total) {
+	if (node->leaf) {
+		int size = 1<<node->level;
+		*total += node->R / size / size;
+	} else {
+		for (int k = 0; k < 4; k++) {
+			poissonAverageR(node->children[k], total);
+		}
+	}
+}
+
+void poissonCorrectR(qNode* node, double K) {
+	node->R -= K;
+	if (!node->leaf) {
+		for (int k = 0; k < 4; k++) {
+			poissonCorrectR(node->children[k], K);
+		}
+	}
+}
+
+double getMaxR(qNode* node) {
+	if (node->leaf)	return fabs(node->R);
+	double max = 0.0;
+	for (int k = 0; k < 4; k++)
+		max = fmax(max, getMaxR(node->children[k]));
+	return max;
+}
+
+double fixAndCheckResidual() {
+	double avgR = 0.0;
+	poissonAverageR(root, &avgR);
+	poissonCorrectR(root, avgR);
+
+	double newMaxR = getMaxR(root);
+	if (newMaxR < eps) {
+		doneVCycle = true;
+	}
+	return newMaxR;
+}
+
+
 void runStep() {
 	printf("running step %d\n", frameNumber + 1);
 	/*for (int d = 0; d < levels; d++) {
@@ -1284,6 +1325,8 @@ void runStep() {
 	doneVCycle = true;
 	computeResidual(root);
 
+	fixAndCheckResidual();
+
 	int numCycles = 0;
 	
 	while (!doneVCycle) {
@@ -1291,7 +1334,8 @@ void runStep() {
 		//printf("start v cycle %d\n", numCycles);
 
 		double residual = runVCycle();	
-		printf("residual after %d cycles: %f\n", numCycles, residual);
+		double newR = fixAndCheckResidual();
+		printf("(corrected) residual after %d cycles: %f\n", numCycles, newR);
 	}
 	printf("end poisson solver, took %d cycles\n", numCycles);
 	totalTime += endTime("poisson solver");
@@ -1544,34 +1588,6 @@ void expandRadius(qNode* node, double radius) {
 			expandRadius(node->children[k], radius);
 		}
 	}
-}
-
-void poissonAverageR(qNode* node, double* total) {
-	if (node->leaf) {
-		int size = 1<<node->level;
-		*total += node->R / size / size;
-	} else {
-		for (int k = 0; k < 4; k++) {
-			poissonAverageR(node->children[k], total);
-		}
-	}
-}
-
-void poissonCorrectR(qNode* node, double K) {
-	node->R -= K;
-	if (!node->leaf) {
-		for (int k = 0; k < 4; k++) {
-			poissonCorrectR(node->children[k], K);
-		}
-	}
-}
-
-double getMaxR(qNode* node) {
-	if (node->leaf)	return fabs(node->R);
-	double max = 0.0;
-	for (int k = 0; k < 4; k++)
-		max = fmax(max, getMaxR(node->children[k]));
-	return max;
 }
 
 void runPoissonTest() {
