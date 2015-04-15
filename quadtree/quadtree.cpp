@@ -22,8 +22,8 @@
 
 bool doneVCycle = false;
 
-int MAX_RELAX_COUNT = 20;
-int OPTIMIZED_RELAX_COUNT = 4;
+int MAX_RELAX_COUNT = 200;
+int OPTIMIZED_RELAX_COUNT = 40;
 
 double eps = .0001;
 
@@ -954,7 +954,7 @@ void relax(int d, int r) {
 
 	bool done = false;
     int totalCycles = 0;
-	while (r-- > 0/* && !done*/) {
+	while (r-- > 0/*!done*/) {
         totalCycles++;
 		done = relaxRecursive(root, d);
 		recursiveUpdate(root, d);
@@ -1435,8 +1435,8 @@ void poissonReset(qNode* node) {
 			double cy = cos(M_PI*2*y);
 			node->divV = 4*M_PI*M_PI * (cx + cy - 2*cx*cy);
 		} else if (poissonTestFunc == POISSONCOSKL) {
-			int k = 3;
-			int l = 3;
+			int k = 2;
+			int l = 2;
 			node->divV = -M_PI*M_PI*(k*k + l*l)*cos(M_PI*k*x)*cos(M_PI*l*y);
 		} else {
 			assert(false);
@@ -1461,8 +1461,8 @@ void computePoissonError(qNode* node, double K, double* total) {
 		} else if (poissonTestFunc == POISSONCOS) {
 			correct += (1-cos(M_PI * 2 * x)) * (1-cos(M_PI * 2 * y));
 		} else if (poissonTestFunc == POISSONCOSKL) {
-			int k = 3;
-			int l = 3;
+			int k = 2;
+			int l = 2;
 			correct += cos(M_PI * k * x) * cos(M_PI * l * y);
 		} else {
 			assert(false);
@@ -1485,6 +1485,27 @@ void poissonAverage(qNode* node, double* total) {
 		}
 	}
 }
+
+void poissonAverageR(qNode* node, double* total) {
+	if (node->leaf) {
+		int size = 1<<node->level;
+		*total += node->R / size / size;
+	} else {
+		for (int k = 0; k < 4; k++) {
+			poissonAverageR(node->children[k], total);
+		}
+	}
+}
+
+void poissonCorrectR(qNode* node, double K) {
+	node->R -= K;
+	if (!node->leaf) {
+		for (int k = 0; k < 4; k++) {
+			poissonCorrectR(node->children[k], K);
+		}
+	}
+}
+
 
 void expandRadius(qNode* node, double radius) {
 	if (node->leaf) {
@@ -1515,6 +1536,11 @@ void runPoissonTest() {
 	
 	double initialResidual = computeResidual(root);
 	printf("initial residual: %f\n", initialResidual);
+
+	double avgR = 0.0;
+	poissonAverageR(root, &avgR);
+	poissonCorrectR(root, avgR);
+	printf("averageR: %f\n", avgR);
 	
 	// run V cycles, compute stuff
 	int i = 0;
@@ -1530,7 +1556,17 @@ void runPoissonTest() {
 		computePoissonError(root, K, &avgError);
 		printf("average error after %d vcycles: %f\n", i, avgError);
 
-		//if (i == 10) break;
+
+		// try manually fixing residual
+		avgR = 0.0;
+		poissonAverageR(root, &avgR);
+		printf("new average residual: %f\n", avgR);
+		poissonCorrectR(root, avgR);
+		avgR = 0.0;
+		poissonAverageR(root, &avgR);
+		printf("average R after correction: %f\n", avgR);
+
+		//if (i == 100) break;
 	}
 	endTime("poisson test");
 	
