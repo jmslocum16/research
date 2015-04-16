@@ -226,7 +226,60 @@ class qNode {
 		double getVal(NodeValue v) {
 			if (v == DP) return dp;
 			else if (v == P) return p;
+			else if (v == VX) return vx;
+			else if (v == VY) return vy;
 			assert(false);
+		}
+
+		double getFaceGradient(int ml, int k, NodeValue v) {
+			qNode* n = this;
+			int oppositeK = 1 - (k%2);
+			while (n != NULL && n->neighbors[k] == NULL) n = n->parent;
+			if (n != NULL) {
+				return n->neighbors[k]->addFaceToGradient(this, ml, k, v);
+			} else {
+				return 0;
+			}
+		}
+
+		double addFaceToGradient(qNode* original, int ml, int k, NodeValue v) {
+			if (leaf || level == ml) {
+				int origSize = 1<<original->level;
+				int size = 1<<level;
+				double dside = fmin(1.0/origSize, 1.0/size);
+				double h = 0.5/origSize + 0.5/size;
+				double d = (dside * origSize)/h;
+				return (getVal(v) - original->getVal(v)) * d;
+			} else {
+				double total = 0.0;
+				if (k < 2) { // y dir
+					int targetI = 1 - k;
+					for (int j = 0; j < 2; j++) {
+						total += children[targetI*2+j]->addFaceToGradient(original, ml, k, v);
+					}
+				} else {
+					int targetJ = 3 - k;
+					for (int i = 0; i < 2; i++) {
+						total += children[2*i+targetJ]->addFaceToGradient(original, ml, k, v);
+					}
+				}
+				return total;
+			}
+
+		}
+
+		void getLaplacian(int ml, double *aSum, double* bSum, NodeValue v) {
+			for (int k = 0; k < 4; k++) {
+				int oppositeK = 1 - (k%2);
+				qNode* n = this;
+				while (n != NULL && n->neighbors[k] == NULL) n = n->parent;
+				if (n != NULL) {
+					n->neighbors[k]->addFaceToLaplacian(this, ml, oppositeK, aSum, bSum, v);
+				} else {
+					*aSum -= 1;
+					*bSum += getVal(v);
+				}
+			}
 		}
 
 		// note: k is opposite of way used to get there, for example if k in original was (1, 0), this k is (-1, 0)
@@ -385,7 +438,14 @@ class qNode {
 				vals[k] = getValueInDir(k, v, &ml);
 				sizes[k] = 1<<ml;
 			}
-			return getGradient(vals, sizes, 1<<level);
+			std::pair<double, double> oldGrad = getGradient(vals, sizes, 1<<level);
+			
+			int ml = leaf ? levels - 1 : level;
+			//std::pair<double, double> newGrad =  std::make_pair((getFaceGradient(ml, 2, v) - getFaceGradient(ml, 3, v))/2.0, (getFaceGradient(ml, 0, v) - getFaceGradient(ml, 1, v))/2.0);
+			std::pair<double, double> newGrad =  std::make_pair((getFaceGradient(ml, 2, v) - getFaceGradient(ml, 3, v))/2.0, (getFaceGradient(ml, 0, v) - getFaceGradient(ml, 1, v))/2.0);
+
+			//printf("old grad: (%f, %f), new grad: (%f, %f)\n", oldGrad.first, oldGrad.second, newGrad.first, newGrad.second);
+			return newGrad;
 		}
 		
 		// curl(F) = d(Fy)/dx - d(Fx)/dy
@@ -881,7 +941,12 @@ double computeResidual(qNode* node) {
 		
 		// double flux = 1/ha * faceGradSum = 1/(1/size * 1) * faceGradSum = size * faceGradSum;
 		double flux = size * faceGradSum;
+		/*double aSum = 0.0;
+		double bSum = 0.0;
+		node->getLaplacian(levels - 1, &aSum, &bSum, P);
+		*/
 		double R = node->divV - flux;
+		//double R = node->divV - (aSum * node->p + bSum);
 		
 		node->R = R;
 		//printf("at [%d][%d], divV: %f, flux: %f, R: %f\n", node->i, node->j, node->divV, flux, R);
@@ -927,7 +992,7 @@ bool relaxRecursive(qNode* node, int ml) {
             bSum2 += dp/h;
 		}
 
-		for (int k = 0; k < 4; k++) {
+		/*for (int k = 0; k < 4; k++) {
 			int oppositeK = 1 - (k%2);
 			qNode* n = node;
 			while (n != NULL && n->neighbors[k] == NULL) n = n->parent;
@@ -937,7 +1002,8 @@ bool relaxRecursive(qNode* node, int ml) {
 				aSum -= 1;
 				bSum += node->dp;
 			}
-		}
+		}*/
+		node->getLaplacian(ml, &aSum, &bSum, DP);
 		
 		// node->temp = (node->R/size - bSum) / aSum;
         // A*R = bSum - aSum*dp, dp = (bSum - A*R)/asum, A = h*h = 1/size^2
@@ -1134,10 +1200,13 @@ void advectAndCopy(qNode* node, qNode* oldNode) {
 	double y = (node->i + 0.5)/size;
 	qNode* last= getSemiLagrangianLookback(oldRoot, &x, &y, 1, node->level);
 	//printf("lookback from node %d (%d, %d) gives %d (%d, %d)", node->level, node->i, node->j, last->level, last->i, last->j);
-	std::pair<double, double> velInterp = last->getVelocityAt(x, y);
+	//std::pair<double, double> velInterp = last->getVelocityAt(x, y);
 
-	node->vx = velInterp.first;
-	node->vy = velInterp.second;
+	//node->vx = velInterp.first;
+	//node->vy = velInterp.second;
+
+	node->vx = last->getValueAt(x, y, VX);
+	node->vy = last->getValueAt(x, y, VY);
 
 	// add gravity TODO(make better)
 	//grid[index].vy -= .98 * dt;
@@ -1165,10 +1234,7 @@ void correctPressure(qNode* node) {
 
 void project(qNode* node) {
 	// correct velocity with updated pressure field to make non-divergent
-	// std::pair<double, double> grad = node->getPressureGradient();
 	std::pair<double, double> grad = node->getValueGradient(P);
-	//node->vx -= grad.first * dt;
-	//node->vy -= grad.second * dt;
 	node->vx -= grad.first;
 	node->vy -= grad.second;
 
@@ -1699,12 +1765,14 @@ double getRealDerivative(double x, double y, int k) {
 double calculateError(qNode* node, double* avgError) {
 	if (node->leaf) {
 		int size = 1<<node->level;
+		double max = 0.0;
 		for (int k = 0; k < 4; k++) {
 			// calculate gradient in direction k
 			int ml = levels - 1;
 			double otherp = node->getValueInDir(k, P, &ml);
 			double h = 0.5/size + 0.5/(1<<ml);
 			double calc = (otherp - node->p) / h;
+			double calc2 = node->getFaceGradient(ml, k, P);
 			
 			double x = (node->j + 0.5 + 0.5*deltas[k][1])/size;
 			double y = (node->i + 0.5 + 0.5*deltas[k][0])/size;
@@ -1714,7 +1782,8 @@ double calculateError(qNode* node, double* avgError) {
 				real = -real;
 			}
 			double error = fabs(real - calc);
-			printf("Error for node %d: (%d, %d) in dir %d, ", node->level, node->i, node->j, k);
+			double error2 = fabs(real - calc2);
+			printf("Error for node %d: (%d, %d) in dir %d, error 2: %f", node->level, node->i, node->j, k, error2);
 			if (ml == node->level) {
 				printf(" at the same level = %f\n", error);
 			} else if (ml < node->level) {
@@ -1723,8 +1792,9 @@ double calculateError(qNode* node, double* avgError) {
 				printf(" down %d levels = %f\n", ml - node->level, error);
 			}
 			*avgError += error/size/size;
-			return error;
+			max = fmax(max, error);
 		}
+		return max;
 	} else {
 		double maxError = 0.0;
 		for (int k = 0; k < 4; k++) {
