@@ -233,10 +233,10 @@ class qNode {
 
 		double getFaceGradient(int ml, int k, NodeValue v) {
 			qNode* n = this;
-			int oppositeK = 1 - (k%2);
+			int oppositeK = (k < 2) ? 1-k : 3-(k%2);//1 - (k%2);
 			while (n != NULL && n->neighbors[k] == NULL) n = n->parent;
 			if (n != NULL) {
-				return n->neighbors[k]->addFaceToGradient(this, ml, k, v);
+				return n->neighbors[k]->addFaceToGradient(this, ml, oppositeK, v);
 			} else {
 				return 0;
 			}
@@ -270,7 +270,7 @@ class qNode {
 
 		void getLaplacian(int ml, double *aSum, double* bSum, NodeValue v) {
 			for (int k = 0; k < 4; k++) {
-				int oppositeK = 1 - (k%2);
+				int oppositeK = (k < 2) ? 1-k : 3-(k%2); //1 - (k%2);
 				qNode* n = this;
 				while (n != NULL && n->neighbors[k] == NULL) n = n->parent;
 				if (n != NULL) {
@@ -941,12 +941,14 @@ double computeResidual(qNode* node) {
 		
 		// double flux = 1/ha * faceGradSum = 1/(1/size * 1) * faceGradSum = size * faceGradSum;
 		double flux = size * faceGradSum;
-		/*double aSum = 0.0;
+		double aSum = 0.0;
 		double bSum = 0.0;
 		node->getLaplacian(levels - 1, &aSum, &bSum, P);
-		*/
-		double R = node->divV - flux;
-		//double R = node->divV - (aSum * node->p + bSum);
+		double laplacian = (aSum * node->p + bSum) * size * size;
+		//printf("old flux: %f, new laplacian: %f\n", flux, laplacian);
+		
+		//double R = node->divV - flux;
+		double R = node->divV - laplacian;
 		
 		node->R = R;
 		//printf("at [%d][%d], divV: %f, flux: %f, R: %f\n", node->i, node->j, node->divV, flux, R);
@@ -1350,6 +1352,18 @@ double fixAndCheckResidual() {
 	return newMaxR;
 }
 
+void projectionCheck(qNode* node, double* max, double* avg) {
+	if (node->leaf) {
+		//printf("divV after projection: %f\n", node->divV);
+		*max = fmax(*max, fabs(node->divV));
+		int size = 1<<node->level;
+		*avg += fabs(node->divV)/size/size;
+	} else {
+		for (int k = 0; k < 4; k++) {
+			projectionCheck(node->children[k], max, avg);
+		}
+	}
+}
 
 void runStep() {
 	printf("running step %d\n", frameNumber + 1);
@@ -1417,7 +1431,21 @@ void runStep() {
 	totalTime += endTime("adapting");
 
 	startTime();
+	double max = 0.0;
+	double avg = 0.0;
+
+	root->computeVelocityDivergence();
+	projectionCheck(root, &max, &avg);
+	printf("max divV before project: %f, avg divV before project: %f\n", max, avg);
+
 	project(root);
+
+	max = 0.0;
+	avg = 0.0;
+
+	root->computeVelocityDivergence();
+	projectionCheck(root, &max, &avg);
+	printf("max divV afer project: %f, avg divV after project: %f\n", max, avg);
 
 	clampVelocity(root);
 	totalTime += endTime("projecting and clamping velocity");
@@ -1476,7 +1504,8 @@ void runStep() {
 
 void initNodeLeftUniform(qNode* node) {
 	int size = 1<<node->level;
-	node->p = 1.0/size/size;
+	//node->p = 1.0/size/size;
+	node->p = 0.0;
 	node->vx = 0.0;
 	node->vy = 0.0;
 	node->phi = 0.0;
@@ -1576,19 +1605,23 @@ void initRecursive(qNode* node, int d) {
 }
 
 void poissonReset(qNode* node) {
-	//node->p = 0;
+	node->p = 0;
 	int size = 1<<node->level;
-	node->p = 1.0/size/size/12;
+	//node->p = 1.0/size/size/12;
 	if (node->leaf) {
+		// set pressure to integral over domain
 		double x = (node->j + 0.5)/size;
 		double y = (node->i + 0.5)/size;
 		if (poissonTestFunc == POISSONXY) {
+			node->p = .2667;
 			node->divV = 96 * (2*x-1) * (y-1)*(y-1) * y*y  +  32 * (x-1)*(x-1) * (2*x+1) * (1 - 6*y + 6*y*y);
 		} else if (poissonTestFunc == POISSONCOS) {
+			node->p = 1.0;
 			double cx = cos(M_PI*2*x);
 			double cy = cos(M_PI*2*y);
 			node->divV = 4*M_PI*M_PI * (cx + cy - 2*cx*cy);
 		} else if (poissonTestFunc == POISSONCOSKL) {
+			node->p = 0.0;
 			int k = 2;
 			int l = 2;
 			node->divV = -M_PI*M_PI*(k*k + l*l)*cos(M_PI*k*x)*cos(M_PI*l*y);
@@ -1603,28 +1636,28 @@ void poissonReset(qNode* node) {
 	}
 }
 
-void computePoissonError(qNode* node, double K, double* total) {
+void computePoissonError(qNode* node, double* total) {
 	if (node->leaf) {
 		int size = 1<<node->level;
 		double x = (node->j + 0.5)/size;
 		double y = (node->i + 0.5)/size;
-		double correct = K;
+		double correct  = 0;
 		if (poissonTestFunc == POISSONXY) {
-			double newy = 2*y+1;
-			correct += (2*x*x*x - 3*x*x + 1)  *  (newy*newy*newy*newy - 2*newy*newy + 1);
+			double newy = 2*y-1;
+			correct = (2*x*x*x - 3*x*x + 1)  *  (newy*newy*newy*newy - 2*newy*newy + 1);
 		} else if (poissonTestFunc == POISSONCOS) {
-			correct += (1-cos(M_PI * 2 * x)) * (1-cos(M_PI * 2 * y));
+			correct = (1-cos(M_PI * 2 * x)) * (1-cos(M_PI * 2 * y));
 		} else if (poissonTestFunc == POISSONCOSKL) {
 			int k = 2;
 			int l = 2;
-			correct += cos(M_PI * k * x) * cos(M_PI * l * y);
+			correct = cos(M_PI * k * x) * cos(M_PI * l * y);
 		} else {
 			assert(false);
 		}
 		*total += fabs(node->p - correct)/size/size;
 	} else {
 		for (int k = 0; k < 4; k++) {
-			computePoissonError(node->children[k], K, total);
+			computePoissonError(node->children[k], total);
 		}
 	}
 }
@@ -1689,20 +1722,18 @@ void runPoissonTest() {
 		newR = runVCycle();
 		printf("residual after %d vcycles: %f\n", i, newR);
 		double total = 0.0;
-		double K = 0.0;
-		poissonAverage(root, &K);
+		//double K = 0.0;
+		//poissonAverage(root, &K);
 		double avgError = 0.0;
-		computePoissonError(root, K, &avgError);
+		computePoissonError(root,  &avgError);
 		printf("average error after %d vcycles: %f\n", i, avgError);
 
 		// try manually fixing residual
 		avgR = 0.0;
 		poissonAverageR(root, &avgR);
-		printf("new average residual: %f\n", avgR);
 		poissonCorrectR(root, avgR);
 		avgR = 0.0;
 		poissonAverageR(root, &avgR);
-		printf("average R after correction: %f\n", avgR);
 		//doneVCycle |= fabs(newR-oldR) < eps/100;
 		doneVCycle = getMaxR(root) < eps;
 	}
@@ -1710,7 +1741,7 @@ void runPoissonTest() {
 	
 	printf("poisson test took %d vcycles\n", i);
 
-	printPressure();
+	//printPressure();
 }
 
 
@@ -1752,12 +1783,12 @@ double getRealDerivative(double x, double y, int k) {
 		else // x partial
 			return 2*M_PI*sin(2*M_PI*x) - 2*M_PI*sin(2*M_PI*x)*cos(2*M_PI*y);
 	} else if (errorTestFunc == ERRORCOSKL) {
-		int k = 3;
+		int kk = 3;
 		int l = 3;
 		if (k < 2) // y partial
-			return -M_PI*l*cos(M_PI*k*x)*sin(M_PI*l*y);
+			return -M_PI*l*cos(M_PI*kk*x)*sin(M_PI*l*y);
 		else //x partial
-			return -M_PI*k*sin(M_PI*k*x)*cos(M_PI*l*y);
+			return -M_PI*kk*sin(M_PI*kk*x)*cos(M_PI*l*y);
 	}
 	assert(false);
 }
@@ -1781,16 +1812,16 @@ double calculateError(qNode* node, double* avgError) {
 				// switch directions because other way
 				real = -real;
 			}
-			double error = fabs(real - calc);
-			double error2 = fabs(real - calc2);
-			printf("Error for node %d: (%d, %d) in dir %d, error 2: %f", node->level, node->i, node->j, k, error2);
+			double error = fabs(real - calc2);
+			printf("Error for node %d: (%d, %d) in dir %d, ", node->level, node->i, node->j, k);
 			if (ml == node->level) {
-				printf(" at the same level = %f\n", error);
+				printf(" at the same level.");
 			} else if (ml < node->level) {
-				printf(" up %d levels = %f\n", node->level - ml, error);
+				printf(" up %d levels.", node->level - ml);
 			} else {
-				printf(" down %d levels = %f\n", ml - node->level, error);
+				printf(" down %d levels.", ml - node->level);
 			}
+			printf("real: %f, calc: %f, error: %f\n", real, calc2, error);
 			*avgError += error/size/size;
 			max = fmax(max, error);
 		}
@@ -1863,7 +1894,6 @@ void runAdaptTest() {
 
 }
 
-// TODO add different possible starting states
 void initSim() {
 	printf("init sim\n");
 
@@ -2043,7 +2073,6 @@ int main(int argc, char** argv) {
 			} else {
 				return 1;
 			}
-			
 		}
 	}
 	//levelToDisplay = levels/2;
