@@ -624,7 +624,7 @@ void runStep() {
 			printf("\n");
 		}
 	}*/
-	//std::swap(root, oldRoot);
+	std::swap(grid, oldGrid);
 
 	double totalTime  = 0.0;
 
