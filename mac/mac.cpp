@@ -73,7 +73,7 @@ int numParticles;
 Particle* particles;
 
 // start state stuff
-enum StartState { LEFT, SINK, SRCSINK, POISSONTEST, ADAPTTEST , ERRORTEST };
+enum StartState { LEFT, SINK, SRCSINK, POISSONTEST, ADAPTTEST , ERRORTEST, PROJECTTEST };
 StartState startState;
 enum PoissonTestFunc { POISSONFUNCNONE, POISSONXY, POISSONCOS, POISSONCOSKL };
 PoissonTestFunc poissonTestFunc = POISSONFUNCNONE;
@@ -127,16 +127,15 @@ void draw() {
 					glColor3f(0.0, 1.0, 0.0);
 					double vx = grid[i*size+j].vx;
 					double vy = grid[i*size+j].vy;
-					if (vx >= eps || vy > eps) {
-						glBegin(GL_LINES);
-						// max size is 1.0/side length, scaled by the max magnitude
-						double scale = maxMag * size;
-						glVertex2f(x, y + 1.0/size);
-						glVertex2f(x + vx / scale, y + 1.0/size);
-						glVertex2f(x + 1.0/size, y);
-						glVertex2f(x + 1.0/size, y + vy/scale);
-						glEnd();
-					}
+
+					glBegin(GL_LINES);
+					// max size is 1.0/side length, scaled by the max magnitude
+					double scale = maxMag * size;
+					glVertex2f(x, y + 1.0/size);
+					glVertex2f(x + vx / scale, y + 1.0/size);
+					glVertex2f(x + 1.0/size, y);
+					glVertex2f(x + 1.0/size, y + vy/scale);
+					glEnd();
 				}
 			}
 			// draw cell
@@ -186,6 +185,8 @@ void display() {
 			}
 		}
 
+
+		printf("max mag: %f\n", maxMag);
 		draw();
     } else {
 		drawParticles();
@@ -473,6 +474,9 @@ void project() {
 		for (int j = 1; j < size; j++) {
 			double pxGrad = (grid[i*size+j].p - grid[i*size+j-1].p)*size;
 			double pyGrad = (grid[i*size+j].p - grid[(i-1)*size+j].p)*size;
+
+			//printf("pxGrad: %f, vx: %f\n", pxGrad, grid[i*size+j].vx);
+			//printf("pyGrad: %f, vy: %f\n", pyGrad, grid[i*size+j].vy);
 			grid[i*size+j].vx -= pxGrad;
 			grid[i*size+j].vy -= pyGrad;
 		}
@@ -592,6 +596,8 @@ void computeVelocityDivergence() {
 				b = grid[(i+1)*size+j].vy;				
 
 			grid[i*size+j].divV += b-a;
+
+			grid[i*size+j].divV *= size;
 		}
 	}
 }
@@ -773,7 +779,7 @@ void initPoissonTest(int i, int j) {
 void initGrid() {
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
-			if (startState == LEFT || startState == ADAPTTEST || startState == ERRORTEST)
+			if (startState == LEFT || startState == PROJECTTEST)
 				initLeftUniform(i, j);
 			else if (startState == SINK)
 				initSink(i, j);
@@ -892,7 +898,71 @@ void runPoissonTest() {
 	}
 }
 
+void runProjectTest() {
+	for (int i = 0; i < size; i++) {
+		for (int j = 0; j < size; j++) {
+			grid[i*size+j].p = 0.0;
+			grid[i*size+j].dp = 0.0;
+			grid[i*size+j].vx = (j+0.5)*(j+0.5)/size/size;
+			grid[i*size+j].vy = 1-(i+0.5)*(i+0.5)/size/size;
+		}
+	}
+	computeVelocityDivergence();
 
+	computeResidual();
+
+	// try manually fixing residual
+	double avgR = 0.0;
+	poissonAverageR(&avgR);
+	poissonCorrectR(avgR);
+	
+	// run V cycles, compute stuff
+
+	while (!doneVCycle) {
+		runVCycle();
+		// try manually fixing residual
+		avgR = 0.0;
+		poissonAverageR(&avgR);
+		poissonCorrectR(avgR);
+
+		//doneVCycle |= fabs(newR-oldR) < eps/100;
+		double newR = getMaxR();
+
+		doneVCycle = newR < eps;
+	}
+	
+
+	double avg = 0.0;
+	double max = 0.0;
+
+	printf("divV before projection");
+	for (int i = 0; i < size; i++) {
+		for (int j = 0; j < size; j++) {
+			printf(" %.4f", grid[i*size+j].divV);
+			avg += fabs(grid[i*size+j].divV/size/size);
+			max = fmax(max, fabs(grid[i*size+j].divV));
+		}
+		printf("\n");
+	}
+	printf("max: %f, avg: %f\n", max, avg);
+	
+	project();
+	computeVelocityDivergence();
+
+	printf("divV after projection\n");
+	avg = 0.0;
+	max = 0.0;
+	for (int i = 0; i < size; i++) {
+		for (int j = 0; j < size; j++) {
+			printf(" %.4f", grid[i*size+j].divV);
+			avg += fabs(grid[i*size+j].divV/size/size);
+			max = fmax(max, fabs(grid[i*size+j].divV));
+		}
+		printf("\n");
+	}
+	printf("max: %f, avg: %f\n", max, avg);
+	
+}
 
 
 void initSim() {
@@ -905,6 +975,8 @@ void initSim() {
 
 	if (startState == POISSONTEST) {
 		runPoissonTest();
+	} else if (startState == PROJECTTEST) {
+		runProjectTest();
 	}
 
 	if (particleAlgorithm != PARTICLENONE) {
@@ -1002,6 +1074,8 @@ int main(int argc, char** argv) {
 			} else {
 				return 1;
 			}
+		} else if (!strcmp("projecttest", arg)) {
+			startState = PROJECTTEST;
 		}
 	}
 	printf("headless: %d, size: %d\n", headless, size);
