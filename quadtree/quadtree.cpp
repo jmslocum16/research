@@ -155,7 +155,7 @@ class qNode {
 
 		// math stuffs
 		double p, dp, R, phi, divV, temp; // pressure ,x velocity, y velocity, pressure correction, residual, level set value
-		double vx, vy, cvx, cvy;
+		double vx, vy, vx2, vy2, cvx, cvy;
 
 		qNode(qNode *p, int i, int j): parent(p), i(i), j(j) {
 			if (parent == NULL) {
@@ -472,17 +472,25 @@ class qNode {
 			assert(false);
 		}
 
-		double getOtherVelocityFace(bool x) {
+		/*double getOtherVelocityFace(qNode* orig, bool x) {
 			if (leaf) {
-				return x ? vx : vy;
+				if (level >= orig->level) {
+					return x ? vx : vy;
+				} else {
+					// need to interpolate
+					int l = level;
+					
+					while (l < )
+					
+				}
 			} else {
 				if (x) {
-					return (children[0]->getOtherVelocityFace(x) + children[2]->getOtherVelocityFace(x))/2.0;
+					return (children[0]->getOtherVelocityFace(orig, x) + children[2]->getOtherVelocityFace(orig, x))/2.0;
 				} else {
-					return (children[0]->getOtherVelocityFace(x) + children[1]->getOtherVelocityFace(x))/2.0;
+					return (children[0]->getOtherVelocityFace(orig, x) + children[1]->getOtherVelocityFace(orig, x))/2.0;
 				}
 			}
-		}
+		}*/
 		
 		void computeVelocityDivergence() {
 			//std::pair<double, double> grad = getVelocityGradient();
@@ -499,9 +507,10 @@ class qNode {
 				if (j == size - 1)
 					b = 0.0;
 				else {
-					qNode* n = this;
-					while (n->neighbors[2] == NULL) n = n->parent;
-					b = n->neighbors[2]->getOtherVelocityFace(true);
+					//qNode* n = this;
+					//while (n->neighbors[2] == NULL) n = n->parent;
+					//b = n->neighbors[2]->getOtherVelocityFace(true);
+					b = vx2;
 				}
 				divV = b-a;
 
@@ -513,9 +522,10 @@ class qNode {
 				if (i == size-1)
 					b = 0.0;
 				else {
-					qNode* n = this;
-					while (n->neighbors[0] == NULL) n = n->parent;
-					b = n->neighbors[0]->getOtherVelocityFace(false);
+					//qNode* n = this;
+					//while (n->neighbors[0] == NULL) n = n->parent;
+					//b = n->neighbors[0]->getOtherVelocityFace(false);
+					b = vy2;
 				}
 				divV += b-a;
 
@@ -1111,7 +1121,7 @@ void relax(int d, int r) {
 	recursiveInject(root, d);
 
 	bool done = false;
-    int tota`lCycles = 0;
+    int totalCycles = 0;
 	while (r-- > 0/* && !done*/) {
         totalCycles++;
 		done = relaxRecursive(root, d);
@@ -1286,12 +1296,15 @@ void project(qNode* node) {
 //	std::pair<double, double> grad = node->getValueGradient(P);
 	if (node->leaf) {
 		if (node->i == 0 || node->j == 0) return;
-		double pgradX, pgradY;
-		if ()
-		//double pgradX = -node->getFaceGradient(levels - 1, 3, P);
-		//double pgradY = -node->getFaceGradient(levels - 1, 1, P);
+		double pgradX = -node->getFaceGradient(levels - 1, 3, P);
+		double pgradY = -node->getFaceGradient(levels - 1, 1, P);
 		node->vx -= pgradX;
 		node->vy -= pgradY;
+
+		pgradX = node->getFaceGradient(levels - 1, 2, P);
+		pgradY = node->getFaceGradient(levels - 1, 0, P);
+		node->vx2 -= pgradX;
+		node->vy2 -= pgradY;
 		
 	} else {
 		for (int k = 0; k < 4; k++) {
@@ -1953,10 +1966,11 @@ void initProjectTest(qNode* node) {
 		node->p = 0.0;
 		node->dp = 0.0;
 
-		node->cvx = (node->j*node->j)/size/size;
-		node->cvy = 1-(node->i)*(node->i)/size/size;
 		node->vx = (node->j+0.5)*(node->j+0.5)/size/size;
 		node->vy = 1-(node->i+0.5)*(node->i+0.5)/size/size;
+
+		node->vx2 = (node->j+1.5)*(node->j+1.5)/size/size;
+		node->vy2 = 1-(node->i+1.5)*(node->i+1.5)/size/size;
 	} else {
 		for (int k = 0; k < 4; k++) {
 			initProjectTest(node->children[k]);
