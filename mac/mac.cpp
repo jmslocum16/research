@@ -315,11 +315,37 @@ double bilinearInterpolation(double a, double b, double c, double d, double di, 
 	return a * (1-di) * (1-dj) + b * (1-di) * dj + c * di * (1-dj) + d * di * dj;
 }
 
+double getInterpX(Cell* g, int i, int j) {
+	if (j == 0 || j == size) {
+		return 0.0;
+	}
+	if (i == 0) {
+		return 2*g[i*size+j].vx - g[(i+1)*size+j].cvx;
+	} else if (i == size) {
+		return 2*g[(i-1)*size+j].vx - g[(i-1)*size+j].cvx;
+	} else {
+		return g[i*size+j].cvx;
+	}
+}
+
+double getInterpY(Cell* g, int i, int j) {
+	if (i == 0 || i == size) {
+		return 0.0;
+	}
+	if (j == 0) {
+		return 2*g[i*size+j].vy - g[i*size+j+1].cvy;
+	} else if (j == size) {
+		return 2*g[i*size+j-1].vy - g[i*size+j-1].cvy;
+	} else {
+		return g[i*size+j].cvy;
+	}
+}
+
 std::pair<double, double> getVelocityAt(Cell* g, double x, double y) {
 	if (x < 0) x = 0;
-	if (x > 1) x = .99999;
+	if (x >= 1) x = .99999;
 	if (y < 0) y = 0;
-	if (y > 1) y = .99999;
+	if (y >= 1) y = .99999;
 	// get cell these values are in
 
 	int i = (int)(y * size);
@@ -329,65 +355,30 @@ std::pair<double, double> getVelocityAt(Cell* g, double x, double y) {
 	double dj = (x*size)-j;
 	
 	// do bilinear interpolation
+
+	printf("getting velocity for x: %f, y: %f. i = %d, j = %d, di = %f, dj = %f\n", x, y, i, j, di, dj);
 	
 	// x
 	double a, b, c, d;
-	if (j == 0) {
-		a = 0.0;
-		c = 0.0;
-	} else {
-		a = g[i*size+j].cvx;
-		if (i == size-1) // extrapolate
-			c = 2*g[i*size+j].vx-a;
-		else
-			c = g[(i+1)*size+j].cvx;
-	}
-	if (j == size-1) {
-		b = 0.0;
-		d = 0.0;
-	} else {
-		if (i == 0) {
-			b = -g[(i+1)*size+j+1].cvx + 2*g[i*size+j+1].vx;
-		} else {
-			b = g[i*size+j+1].cvx;	
-		}
-		if (i == size-1) {
-			d = 2*g[i*size+j+1].vx - b;
-		} else {
-			d = g[(i+1)*size+j+1].cvx;
-		}
-	}
+
+	a = getInterpX(g, i, j);
+	b = getInterpX(g, i, j+1);
+	c = getInterpX(g, i+1, j);
+	d = getInterpX(g, i+1, j+1);
+
+	printf("x interp values: (%f, %f, %f, %f)\n", a, b, c, d);
 	double newvx = bilinearInterpolation(a, b, c, d, di, dj);
 	
+	a = getInterpY(g, i, j);
+	b = getInterpY(g, i, j+1);
+	c = getInterpY(g, i+1, j);
+	d = getInterpY(g, i+1, j+1);
 
 	// y
-	if (i == 0) {
-		a = 0.0;
-		b = 0.0;
-	} else {
-		a = g[i*size+j].cvy;
-		if (j == size - 1)
-			b = 2*g[i*size+j].vy - a;
-		else
-			b = g[i*size+j+1].cvy;
-	}
-	if (i == size - 1) {
-		c = 0.0;
-		d = 0.0;
-	} else {
-		if (j == 0) {
-			c = -g[i*size+j+1].cvy + 2*g[(i+1)*size+j].vy;
-		} else {
-			c = g[(i+1)*size+j].cvy;
-		}
-		if (j == size-1) {
-			d = 2*g[(i+1)*size+j].vy - c;
-		} else {
-			d = g[(i+1)*size+j+1].cvy;
-		}
-	}
 	double newvy = bilinearInterpolation(a, b, c, d, di, dj);
 
+
+	printf("y interp values: (%f, %f, %f, %f)\n", a, b, c, d);
 	return std::make_pair(newvx, newvy);
 }
 
@@ -424,6 +415,7 @@ void advectAndCopy() {
 			double y = float(i)/size;
 			getSemiLagrangianLookback(oldGrid, &x, &y);
 			std::pair<double, double> newvel = getVelocityAt(oldGrid, x, y);
+			printf("SL lookback velocity for x = %f, y = %f: (%f, %f)\n", x, y, newvel.first, newvel.second);
 			grid[i*size+j].cvx = newvel.first;
 			grid[i*size+j].cvy = newvel.second;
 
@@ -442,7 +434,7 @@ void advectAndCopy() {
 				std::pair<double, double> newvel = getVelocityAt(oldGrid, x, y);
 				vx2 = newvel.first;
 			} else {
-				vx2 = oldGrid[(i+1)*size+j].cvx;
+				vx2 = grid[(i+1)*size+j].cvx;
 			}
 			if (j == size-1) {
 				double x = float(j+1)/size;
@@ -451,13 +443,89 @@ void advectAndCopy() {
 				std::pair<double, double> newvel = getVelocityAt(oldGrid, x, y);
 				vy2 = newvel.second;
 			} else {
-				vy2 = oldGrid[i*size+j+1].cvy;
+				vy2 = grid[i*size+j+1].cvy;
 			}
 			grid[i*size+j].vx = (grid[i*size+j].cvx + vx2)/2.0;
 			grid[i*size+j].vy = (grid[i*size+j].cvy + vy2)/2.0;
 		}
 	}
+}
+
+// TESTS
+void testInterp() {
+	double a = 1.0;
+	double b = 2.0;
+	double c = 4.0;
+	double d = 8.0;
+	assert (bilinearInterpolation(a, b, c, d, 0, 0) == 1.0);
+	assert (bilinearInterpolation(a, b, c, d, 0, 1) == 2.0);
+	assert (bilinearInterpolation(a, b, c, d, 1, 0) == 4.0);
+	assert (bilinearInterpolation(a, b, c, d, 1, 1) == 8.0);
+
+	assert (bilinearInterpolation(a, b, c, d, .5, .5) == 3.75);
+	assert (bilinearInterpolation(a, b, c, d, .25, .4) == .75 * .6 * a + .75 * .4 * b + .25 * .6 * c + .25*.4*d);
+}
+
+void assertf(double x, double y) {
+	double diff = fabs(x-y);
+	if (diff > eps) {
+		printf("wrong!. x = %f, y = %f\n", x, y);
+		assert (false);
+	}
+}
+
+void testAdvectAndCopy() {
+	int oldSize = size;
+	double oldDt = dt;
 	
+	size = 2;
+	dt = 0.0;
+	grid = new Cell[4];
+	oldGrid = new Cell[4];
+	
+	oldGrid[0].vx = 0.0;
+	oldGrid[0].vy = 0.0;
+	oldGrid[1].vx = 1.0;
+	oldGrid[1].vy = 0.0;
+	oldGrid[2].vx = 0.0;
+	oldGrid[2].vy = 2.0;
+	oldGrid[3].vx = 3.0;
+	oldGrid[3].vy = 4.0;
+
+	advectAndCopy();
+
+
+	// old corners
+	assertf (oldGrid[3].cvx, 2.0);
+	assertf (oldGrid[3].cvy, 3.0);
+
+
+	// new corners
+	assertf (grid[0].cvx, 0.0);
+	assertf (grid[0].cvy, 0.0);
+	assertf (grid[1].cvx, 0.0);
+	assertf (grid[1].cvy, 0.0);
+	assertf (grid[2].cvx, 0.0);
+	assertf (grid[2].cvy, 1.0);
+	assertf (grid[3].cvx, 2.0);
+	assertf (grid[3].cvy, 3.0);
+	
+	// new faces
+	assertf (grid[0].vx, 0.0);
+	assertf (grid[0].vy, 0.0);
+	assertf (grid[1].vx, 1.0);
+	assertf (grid[1].vy, 0.0);
+	assertf (grid[2].vx, 0.0);
+	assertf (grid[2].vy, 2.0);
+	assertf (grid[3].vx, 3.0);
+	assertf (grid[3].vy, 4.0);
+
+
+	// clean up
+	dt = oldDt;
+	size = oldSize;
+	delete grid;
+	delete oldGrid;
 }
 
 void correctPressure() {
@@ -1081,8 +1149,8 @@ int main(int argc, char** argv) {
 	printf("headless: %d, size: %d\n", headless, size);
 
 	// run tests
-	//testNeighbors();
-	//testMultilevelNeighbors();
+	testInterp();
+	testAdvectAndCopy();
 
 	initSim();
 	
