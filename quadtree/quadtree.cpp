@@ -110,7 +110,7 @@ int numParticles;
 Particle* particles;
 
 // start state stuff
-enum StartState { LEFT, SINK, SRCSINK, POISSONTEST, ADAPTTEST , ERRORTEST };
+enum StartState { LEFT, SINK, SRCSINK, POISSONTEST, ADAPTTEST , ERRORTEST, PROJECTTEST };
 StartState startState;
 enum AdaptScheme { ADAPTNONE, CURL, PGRAD };
 AdaptScheme adaptScheme = ADAPTNONE;
@@ -142,7 +142,7 @@ std::pair<double, double> getGradient(double vals[], int sizes[], int size) {
 }
 
 int nodeId = 0;
-enum NodeValue { P, VX, VY, PHI, DP};
+enum NodeValue { P, VX, VY, PHI, DP, DIVV };
 class qNode {
 	public:
 		// tree stuffs
@@ -154,7 +154,8 @@ class qNode {
 		int level, i, j; // level coordinates
 
 		// math stuffs
-		double p, vx, vy, dp, R, phi, divV, temp; // pressure ,x velocity, y velocity, pressure correction, residual, level set value
+		double p, dp, R, phi, divV, temp; // pressure ,x velocity, y velocity, pressure correction, residual, level set value
+		double vx, vy, cvx, cvy;
 
 		qNode(qNode *p, int i, int j): parent(p), i(i), j(j) {
 			if (parent == NULL) {
@@ -228,6 +229,7 @@ class qNode {
 			else if (v == P) return p;
 			else if (v == VX) return vx;
 			else if (v == VY) return vy;
+			else if (v == DIVV) return divV;
 			assert(false);
 		}
 
@@ -469,11 +471,57 @@ class qNode {
 			}
 			assert(false);
 		}
+
+		double getOtherVelocityFace(bool x) {
+			if (leaf) {
+				return x ? vx : vy;
+			} else {
+				if (x) {
+					return (children[0]->getOtherVelocityFace(x) + children[2]->getOtherVelocityFace(x))/2.0;
+				} else {
+					return (children[0]->getOtherVelocityFace(x) + children[1]->getOtherVelocityFace(x))/2.0;
+				}
+			}
+		}
 		
 		void computeVelocityDivergence() {
-			std::pair<double, double> grad = getVelocityGradient();
-			divV = grad.first + grad.second;
-			if (!leaf) {
+			//std::pair<double, double> grad = getVelocityGradient();
+			//divV = grad.first + grad.second;
+			if (leaf) {
+				int size = 1<<level;
+				double a, b;
+
+				// x
+				if (j == 0)
+					a = 0.0;
+				else
+					a = vx;
+				if (j == size - 1)
+					b = 0.0;
+				else {
+					qNode* n = this;
+					while (n->neighbors[2] == NULL) n = n->parent;
+					b = n->neighbors[2]->getOtherVelocityFace(true);
+				}
+				divV = b-a;
+
+				// y
+				if (i == 0)
+					a = 0.0;
+				else
+					a = vy;
+				if (i == size-1)
+					b = 0.0;
+				else {
+					qNode* n = this;
+					while (n->neighbors[0] == NULL) n = n->parent;
+					b = n->neighbors[0]->getOtherVelocityFace(false);
+				}
+				divV += b-a;
+
+				divV *= size;
+			} else {
+				divV = 0.0;
 				for (int k = 0; k < 4; k++) {
 					children[k]->computeVelocityDivergence();
 				}
@@ -568,19 +616,21 @@ qNode* oldRoot;
 // debugging
 
 // current node, target d/i/j
-qNode* get(qNode* node, int d, int i, int j) {
-	if (node->level == d) {
+qNode* get(qNode* node, int i, int j) {
+	/*if (node->level == d) {
 		assert(node->i == i);
 		assert(node->j == j);
 		return node;
 	} else if (node->leaf) return NULL;
-	int leveldif = d - node->level;
+	*/
+	if (node->leaf) return node;
+	int leveldif = (levels - 1) - node->level;
 	int midsize = 1<<(leveldif-1);
 	int midi = node->i*(1<<leveldif) + midsize;
 	int midj = node->j*(1<<leveldif) + midsize;
 	int newi = (i < midi) ? 0 : 1;
 	int newj = (j < midj) ? 0 : 1;
-	return get(node->children[newi*2+newj], d, i, j);
+	return get(node->children[newi*2+newj], i, j);
 }
 
 qNode* getLeaf(qNode* node, double x, double y, int ml) {
@@ -615,21 +665,18 @@ qNode*  getSemiLagrangianLookback(qNode* r, double* x, double* y, int steps, int
 }
 
 // not fast but who cares
-void printPressure() {
-	for (int d = 0; d < levels; d++) {
-		int size = 1<<d;
-		printf("level %d\n", d);
-		for (int i = 0; i < size; i++) {
-			for (int j = 0; j < size; j++) {
-				qNode* n = get(root, d, i, j);
-				if (n != NULL) {
-					printf(" %.4f", n->p);
-				} else {
-					printf("      ");
-				}
+void printValue(NodeValue v) {
+	int size = 1<<(levels - 1);
+	for (int i = 0; i < size; i++) {
+		for (int j = 0; j < size; j++) {
+			qNode* n = get(root, i, j);
+			if (n != NULL) {
+				printf(" %.4f", n->getVal(v));
+			} else {
+				printf("      ");
 			}
-			printf("\n");
 		}
+		printf("\n");
 	}
 }
 
@@ -1064,7 +1111,7 @@ void relax(int d, int r) {
 	recursiveInject(root, d);
 
 	bool done = false;
-    int totalCycles = 0;
+    int tota`lCycles = 0;
 	while (r-- > 0/* && !done*/) {
         totalCycles++;
 		done = relaxRecursive(root, d);
@@ -1236,11 +1283,17 @@ void correctPressure(qNode* node) {
 
 void project(qNode* node) {
 	// correct velocity with updated pressure field to make non-divergent
-	std::pair<double, double> grad = node->getValueGradient(P);
-	node->vx -= grad.first;
-	node->vy -= grad.second;
-
-	if (!node->leaf) {
+//	std::pair<double, double> grad = node->getValueGradient(P);
+	if (node->leaf) {
+		if (node->i == 0 || node->j == 0) return;
+		double pgradX, pgradY;
+		if ()
+		//double pgradX = -node->getFaceGradient(levels - 1, 3, P);
+		//double pgradY = -node->getFaceGradient(levels - 1, 1, P);
+		node->vx -= pgradX;
+		node->vy -= pgradY;
+		
+	} else {
 		for (int k = 0; k < 4; k++) {
 			project(node->children[k]);
 		}
@@ -1496,7 +1549,7 @@ void runStep() {
 			printf("\n");
 		}
 	}*/
-	//printPressure();
+	//printValue(P);
 
 	// increase frame number here instead of in display so that you get 1 of each frame, not dependent on glut's redrawing, like on alt-tabbing or anything
 	frameNumber++;
@@ -1565,7 +1618,7 @@ void initPoissonTest(qNode* node) {
 }
 
 void initNodeFunction(qNode* node) {
-	if (startState == LEFT || startState == ADAPTTEST || startState == ERRORTEST)
+	if (startState == LEFT || startState == ADAPTTEST || startState == ERRORTEST || startState == PROJECTTEST)
 		initNodeLeftUniform(node);
 	else if (startState == SINK)
 		initNodeSink(node);
@@ -1894,6 +1947,83 @@ void runAdaptTest() {
 
 }
 
+void initProjectTest(qNode* node) {
+	if (node->leaf) {
+		int size = 1<<node->level;
+		node->p = 0.0;
+		node->dp = 0.0;
+
+		node->cvx = (node->j*node->j)/size/size;
+		node->cvy = 1-(node->i)*(node->i)/size/size;
+		node->vx = (node->j+0.5)*(node->j+0.5)/size/size;
+		node->vy = 1-(node->i+0.5)*(node->i+0.5)/size/size;
+	} else {
+		for (int k = 0; k < 4; k++) {
+			initProjectTest(node->children[k]);
+		}
+	}
+}
+
+void runProjectTest() {
+	if (adaptScheme != ADAPTNONE) {
+		expandRadius(root, .3);
+		expandRadius(root, .2);
+	}
+	
+	initProjectTest(root);	
+
+	root->computeVelocityDivergence();
+
+	computeResidual(root);
+
+	// try manually fixing residual
+	double avgR = 0.0;
+	poissonAverageR(root, &avgR);
+	poissonCorrectR(root, avgR);
+	
+	// run V cycles, compute stuff
+
+	while (!doneVCycle) {
+		runVCycle();
+		// try manually fixing residual
+		avgR = 0.0;
+		poissonAverageR(root, &avgR);
+		poissonCorrectR(root, avgR);
+
+		//doneVCycle |= fabs(newR-oldR) < eps/100;
+		double newR = getMaxR(root);
+
+		doneVCycle = newR < eps;
+	}
+	
+
+	double avg = 0.0;
+	double max = 0.0;
+
+	printf("divV before projection:\n");
+	printValue(DIVV);
+	
+	projectionCheck(root, &max, &avg);
+	printf("max: %f, avg: %f\n", max, avg);
+	
+	project(root);
+
+
+	root->computeVelocityDivergence();
+
+	printf("divV after projection:\n");
+	avg = 0.0;
+	max = 0.0;
+
+	printValue(DIVV);
+	projectionCheck(root, &max, &avg);
+
+	printf("max: %f, avg: %f\n", max, avg);
+	
+}
+
+
+
 void initSim() {
 	printf("init sim\n");
 
@@ -1901,7 +2031,7 @@ void initSim() {
 	oldRoot = new qNode(NULL, 0, 0);
 
 	int startLevel = levels - 2;
-	if (startState == POISSONTEST || startState == ERRORTEST) {
+	if (startState == POISSONTEST || startState == ERRORTEST || startState == PROJECTTEST) {
 		if (adaptScheme == ADAPTNONE)
 			startLevel = levels - 1;
 		else
@@ -1920,6 +2050,9 @@ void initSim() {
 		return;
 	} else if (startState == ERRORTEST) {
 		runErrorTest();
+		return;
+	} else if (startState == PROJECTTEST) {
+		runProjectTest();
 		return;
 	}
 
@@ -2073,6 +2206,8 @@ int main(int argc, char** argv) {
 			} else {
 				return 1;
 			}
+		} else if (!strcmp("projecttest", arg)) {
+			startState = PROJECTTEST;
 		}
 	}
 	//levelToDisplay = levels/2;
