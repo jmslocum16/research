@@ -134,15 +134,6 @@ double maxMag;
 
 // navigating 
 double deltas[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
-// for a given delta, the 2 corners to go to on finer levels when calculating face gradients/laplacian
-double corner1coords[4][2] = {{0, 0}, {1, 0}, {0, 0}, {0, 1}};
-double corner2coords[4][2] = {{0, 1}, {1, 1}, {1, 0}, {1, 1}};
-
-// utility functions
-std::pair<double, double> getGradient(double vals[], int sizes[], int size) {
-	// grad = a - b / (dist) = (a - b) / ((1/sizea) / 2 + (1/sizeb) / 2 + 1/size) = (a - b) / (.5/sizea + .5/sizeb + size)
-	return std::make_pair((vals[2] - vals[3])/(0.5/sizes[2] + 0.5/sizes[3] + 1.0/size), (vals[0]-vals[1])/(0.5/sizes[0] + 0.5/sizes[1] + 1.0/size));	
-}
 
 // returns velocity with each term bilinearly interpolated from nodal values
 /*
@@ -330,144 +321,12 @@ class qNode {
 			}
 		}
 
-		double getValueInDir(int k, NodeValue v, int* ml) {
-			std::pair<qNode*, qNode*> neighbor = getNeighborInDir(k, ml);
-			double val;
-			if (*ml >= level) {
-				if (v == P) {
-					if (neighbor.second == NULL) val = neighbor.first->p;
-					else val = (neighbor.first->p + neighbor.second->p)/2.0;
-				} else if (v == VX) {
-					if (neighbor.second == NULL) val = neighbor.first->vx;
-					else val = (neighbor.first->vx + neighbor.second->vx)/2.0;
-				} else if (v == VY) {
-					if (neighbor.second == NULL) val = neighbor.first->vy;
-					else val = (neighbor.first->vy + neighbor.second->vy)/2.0;
-				} else if (v == PHI) {
-					// TODO
-				} else if (v == DP) {
-					if (neighbor.second == NULL) val = neighbor.first->dp;
-					else val = (neighbor.first->dp + neighbor.second->dp)/2.0;
-				}
-			} else {
-				assert(neighbor.second == NULL);
-				int nsize = 1<<(neighbor.first->level);
-				double targetX = (neighbor.first->j + 0.5)/nsize;
-				double targetY = (neighbor.first->i + 0.5)/nsize;
-				if (k < 2) { // in y dir
-					targetX = (j + 0.5)/(1<<level);
-				} else {
-					targetY = (i + 0.5)/(1<<level);
-				}
-				val = neighbor.first->getValueAt(targetX, targetY, v);
-			}
-			return val;
-		}
-	
-
-		// finds the  neighbor at the given multilevel
-		// returns 2  cells if on the same (higher) level, otherwise returns one and null
-		// d is level, (i, j), k is the direction (deltas index). Value initially in level is the target level, value returned in level is the level of the neighboring cell
-		// guaranteed d <= target level, otherwise that wouldn't make any sense..
-		std::pair<qNode*, qNode*> getNeighborInDir(int k, int* ml) {
-			int size = 1<<level;
-			assert (level <= *ml);
-			int newi = i + deltas[k][0];
-			int newj = j + deltas[k][1];
-			if (newi < 0 || newi >= size || newj < 0 || newj >= size) {
-				// not on grid, use boundary conditions
-				*ml = level;
-				return std::make_pair(this, static_cast<qNode*>(NULL));
-			} else if (neighbors[k] == NULL) {
-				// go up until find the cell with that neighbor
-				qNode* node = parent;
-				while (node->neighbors[k] == NULL) {
-					node = node->parent;
-				}
-				*ml = node->level;
-				return std::make_pair(node->neighbors[k], static_cast<qNode*>(NULL));
-			} else if (level == *ml || neighbors[k]->leaf) {
-				// simply just your neighbor
-				*ml = level;
-				return std::make_pair(neighbors[k], static_cast<qNode*>(NULL));
-			} else {
-				qNode* c1 = neighbors[k]->corner1(k);
-				qNode* c2 = neighbors[k]->corner2(k);
-				int d = level + 1;
-				while (d < *ml && !c1->leaf && !c2->leaf) {
-					c1 = c1->corner2(k);
-					c2 = c2->corner1(k);
-					d++;
-				}
-				if (*ml == d || (c1->leaf && c2->leaf)) {
-					*ml = d;
-					return std::make_pair(c1, c2);
-				} else if (!c1->leaf) {
-					// terminated because c2 not used anymore. Keep following c1 to the end then return it.
-					while (d < *ml && !c1->leaf) {
-						c1 = c1->corner2(k);
-						d++;
-					}
-					*ml = d;
-					return std::make_pair(c1, static_cast<qNode*>(NULL));
-				} else if (!c2->leaf) {
-					// terminated because c1 not used anymore. Keep following c2 to the end then return it.
-					while (d < *ml && !c2->leaf) {
-						c2 = c2->corner1(k);
-						d++;
-					}
-					*ml = d;
-					return std::make_pair(c2, static_cast<qNode*>(NULL));
-				} else {
-		            printf("THIS SHOULD NEVER HAPPEN\n");
-				}
-			}
-		}
-
-		qNode* corner1(int k) {
-			if (leaf) return NULL;
-			int i = corner1coords[k][0];
-			int j = corner1coords[k][1];
-			return this->children[2*i+j];
-		}
-		qNode* corner2(int k) {
-			if (leaf) return NULL;
-			int i = corner2coords[k][0];
-			int j = corner2coords[k][1];
-			return this->children[2*i+j];
-		}
-
 		// utility functions
-		
-		std::pair<double, double> getVelocityGradient() {
-		    double vals[4];
-			int sizes[4];
-		
-			for (int k = 0; k < 4; k++) {
-				int ml = leaf ? levels - 1 : level;
-				vals[k] = getValueInDir(k, (k < 2) ? VY : VX, &ml);
-				sizes[k] = 1<<ml;
-			}
-			
-			return getGradient(vals, sizes, 1<<level);
-		}
-
 		std::pair<double, double> getValueGradient(NodeValue v) {
-			double vals[4];
-			int sizes[4];
-
-			for (int k = 0; k < 4; k++) {
-				int ml = leaf? levels - 1: level;
-				vals[k] = getValueInDir(k, v, &ml);
-				sizes[k] = 1<<ml;
-			}
-			std::pair<double, double> oldGrad = getGradient(vals, sizes, 1<<level);
 			
 			int ml = leaf ? levels - 1 : level;
-			//std::pair<double, double> newGrad =  std::make_pair((getFaceGradient(ml, 2, v) - getFaceGradient(ml, 3, v))/2.0, (getFaceGradient(ml, 0, v) - getFaceGradient(ml, 1, v))/2.0);
 			std::pair<double, double> newGrad =  std::make_pair((getFaceGradient(ml, 2, v) - getFaceGradient(ml, 3, v))/2.0, (getFaceGradient(ml, 0, v) - getFaceGradient(ml, 1, v))/2.0);
 
-			//printf("old grad: (%f, %f), new grad: (%f, %f)\n", oldGrad.first, oldGrad.second, newGrad.first, newGrad.second);
 			return newGrad;
 		}
 		
@@ -493,26 +352,6 @@ class qNode {
 			assert(false);
 		}
 
-		/*double getOtherVelocityFace(qNode* orig, bool x) {
-			if (leaf) {
-				if (level >= orig->level) {
-					return x ? vx : vy;
-				} else {
-					// need to interpolate
-					int l = level;
-					
-					while (l < )
-					
-				}
-			} else {
-				if (x) {
-					return (children[0]->getOtherVelocityFace(orig, x) + children[2]->getOtherVelocityFace(orig, x))/2.0;
-				} else {
-					return (children[0]->getOtherVelocityFace(orig, x) + children[1]->getOtherVelocityFace(orig, x))/2.0;
-				}
-			}
-		}*/
-		
 		void computeVelocityDivergence() {
 			//std::pair<double, double> grad = getVelocityGradient();
 			//divV = grad.first + grad.second;
@@ -692,7 +531,6 @@ class qNode {
 			}
 		}
 
-
 		// current node, target d/i/j
 		
 		qNode* get(int nd, int ni, int nj) {
@@ -710,10 +548,7 @@ class qNode {
 			int newi = (ni < midi) ? 0 : 1;
 			int newj = (nj < midj) ? 0 : 1;
 			return children[newi*2+newj]->get(nd, ni, nj);
-		}
-
-
-		
+		}	
 };
 
 
@@ -910,88 +745,6 @@ bool assertNeighbors(qNode* n1, qNode* n2, qNode* realN1, qNode* realN2) {
 	}
 }
 
-// test multilevel neighbor functions
-// construct following quadtree with 4 levels:
-/* - - - - - - - -
- *|       | | |   |
- *         - -     
- *|       | | |   |
- *         - - - -
- *|       | | |   |
- *         - -
- *|       | | |   |
- * - - - - - - - - 
- *|   |   |       |
- *
- *|   |   |       |
- * - - - -
- *|   |   |       |
- *
- *|   |   |       |
- * - - - - - - - -
- */
-void testMultilevelNeighbors() {
-	// construct tree
-	qNode* testRoot = new qNode(NULL, 0, 0);
-	testRoot->expand(false);
-	testRoot->children[1]->expand(false);
-	testRoot->children[2] ->expand(false);
-	testRoot->children[1]->children[0]->expand(false);
-	testRoot->children[1]->children[2]->expand(false);
-
-	// actual tests
-
-	// deltas: {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
-	// level 1
-	int d = 1;
-	std::pair<qNode*, qNode*> n;
-	// cell 0's neighbor to the right
-	int level = d;
-	n = testRoot->children[0]->getNeighborInDir(2, &level);
-	assert (assertNeighbors(testRoot->children[1], NULL, n.first, n.second));
-	assert (level == 1);
-	// cell 1's neighbor to the left
-	level = d;
-	n = testRoot->children[1]->getNeighborInDir(3, &level);
-	assert (assertNeighbors(testRoot->children[0],  NULL, n.first, n.second));
-	assert (level == 1);
-
-	// level 2
-	d = 2;
-
-	level = d;
-	n = testRoot->children[0]->getNeighborInDir(2, &level);
-	assert (assertNeighbors(testRoot->children[1]->children[0], testRoot->children[1]->children[2], n.first, n.second));
-	assert (level == 2);
-
-	level = d;
-	n = testRoot->children[1]->children[2]->getNeighborInDir(3, &level);
-	assert (assertNeighbors(testRoot->children[0], NULL, n.first, n.second));
-	assert (level == 1);
-
-	// level 3
-	d = 3;
-
-	level = d;
-	n = testRoot->children[0]->getNeighborInDir(2, &level);
-	assert (assertNeighbors(testRoot->children[1]->children[0]->children[2], testRoot->children[1]->children[2]->children[0], n.first, n.second));
-	assert (level == 3);
-
-	level = d;
-	n = testRoot->children[0]->getNeighborInDir(0, &level);
-	assert (assertNeighbors(testRoot->children[2]->children[0], testRoot->children[2]->children[1], n.first, n.second));
-	assert (level == 2);
-
-	level = d;
-	n = testRoot->children[3]->getNeighborInDir(1, &level);
-	assert (assertNeighbors(testRoot->children[1]->children[2]->children[3], NULL, n.first, n.second));
-	assert (level == 3);
-
-	// clean up
-	printf("done testing multilevel neighbors\n");
-	delete testRoot;
-}
-
 // tests neighbor pointers
 void testNeighbors() {
 	qNode* testRoot = new qNode(NULL, 0, 0);
@@ -1114,24 +867,11 @@ double computeResidual(qNode* node) {
 	int size = 1<<node->level;
 	if (node->leaf) { // if leaf cell, compute residual
 		// compute it: R = div(vx, vy) - 1/(ha)*sum of (s * grad) for each face
-		double faceGradSum = 0.0;
-		for (int k = 0; k < 4; k++) {
-			int level = levels - 1; // residual is computed at largest multilevel only.
-			double neighborp = node->getValueInDir(k, P, &level);
-			int neighborsize = 1 << level;
-			// integral around the edge of flux, or side length * face gradient
-			faceGradSum += (neighborp - node->p) / (0.5/size + 0.5/neighborsize);
-		}
-		
-		// double flux = 1/ha * faceGradSum = 1/(1/size * 1) * faceGradSum = size * faceGradSum;
-		double flux = size * faceGradSum;
 		double aSum = 0.0;
 		double bSum = 0.0;
 		node->getLaplacian(levels - 1, &aSum, &bSum, P);
 		double laplacian = (aSum * node->p + bSum) * size * size;
-		//printf("old flux: %f, new laplacian: %f\n", flux, laplacian);
 		
-		//double R = node->divV - flux;
 		double R = node->divV - laplacian;
 		
 		node->R = R;
@@ -1168,41 +908,12 @@ bool relaxRecursive(qNode* node, int ml) {
         double dp;
         double h;
 		double oldDif = node->dp;
-		double aSum2 = 0.0;
-		double bSum2 = 0.0;
-		for (int k = 0; k < 4; k++) {
-			int level = ml;
-			dp = node->getValueInDir(k, DP, &level);
-            h = 0.5 / size + 0.5 /(1<<level);
-            aSum2 -= 1/h;
-            bSum2 += dp/h;
-		}
 
-		/*for (int k = 0; k < 4; k++) {
-			int oppositeK = 1 - (k%2);
-			qNode* n = node;
-			while (n != NULL && n->neighbors[k] == NULL) n = n->parent;
-			if (n != NULL) {
-				n->neighbors[k]->addFaceToLaplacian(node, ml, oppositeK, &aSum, &bSum, DP);
-			} else {
-				aSum -= 1;
-				bSum += node->dp;
-			}
-		}*/
 		node->getLaplacian(ml, &aSum, &bSum, DP);
 		
-		// node->temp = (node->R/size - bSum) / aSum;
         // A*R = bSum - aSum*dp, dp = (bSum - A*R)/asum, A = h*h = 1/size^2
 		node->temp = -(bSum - node->R/size/size)/aSum;
 
-		//printf("old dp: bSum: %f, aSum: %f, R: %f\n", bSum2, aSum2, node->R);
-		//printf("new dp: bSum: %f, aSum: %f, R: %f\n", bSum, aSum, node->R);
-		double oldDp = (node->R/size - bSum2)/aSum2;
-		double newDp = node->temp;
-
-		/*if (oldDp != newDp) {
-			printf("[%d](%d,%d) old dp: %f, new dp: %f\n", node->level, node->i, node->j, (node->R/size - bSum2)/aSum2, node->temp);
-		}*/
 		double diff = oldDif - node->temp;
 
         //printf("relaxing[%d][%d][%d]: aSum: %f, bSumL %f, R: %f, result: %f, diff from old: %f\n", d, i, j, aSum, bSum, grid[d][i*size+j].R, grid[d][i*size+j].temp, diff);
@@ -1303,6 +1014,7 @@ bool adaptFunction(qNode* node) {
 // copies new pressure over
 // returns true if any nodes were changed, false otherwise
 bool recursiveAdaptAndCopy(qNode* node, qNode* oldNode) {
+	// TODO implement properly with nodal/face velocities
 	if (node->level == levels - 1) return false;
 	assert (node->leaf == oldNode->leaf);
 	node->p = oldNode->p;
@@ -1482,7 +1194,6 @@ void correctPressure(qNode* node) {
 
 void project(qNode* node) {
 	// correct velocity with updated pressure field to make non-divergent
-//	std::pair<double, double> grad = node->getValueGradient(P);
 	if (node->leaf) {
 		//if (node->i == 0 || node->j == 0) return;
 		double pgradX, pgradY;
@@ -1728,43 +1439,6 @@ void runStep() {
 	if (particleAlgorithm != PARTICLENONE) {
 		advectParticles();
 	}
-	//printf("advecting phi\n");
-	// dphi/dt + v dot grad(phi) = 0
-	// dphi/dt = -v dot grad(phi)
-	/*size = 1 << (levels - 1);
-	double dphi[size*size];
-	for (int i = 0; i < size; i++) {
-		for (int j = 0; j < size; j++) {
-			std::pair<double, double> grad = getLevelSetGradient(grid, levels - 1, i, j);
-			//printf("level set gradient at [%d][%d] is (%.2f, %.2f), v is (%.2f, %.2f), dphi is %.2f\n", i, j, grad.first, grad.second, grid[i*size+j].vx, grid[i*size+j].vy, dphi[i*size+j]);
-			//dphi[i*size+j] = -dt * (grad.first * grid[i*size+j].vx + grad.second * grid[i*size+j].vy);
-			dphi[i*size+j] = dt * (-grad.first * grid[levels - 1][i*size+j].vx - grad.second * grid[levels-1][i*size+j].vy);
-		}
-	}*/
-	/*for (int i = 0; i < size; i++) {
-		for (int j = 0; j < size; j++) {
-			grid[i * size + j].phi += dphi[i*size+j];
-			printf(" %.2f", grid[i*size+j].phi);
-		}
-		printf("\n");
-	}*/
-	
-	
-	/*printf("done step, took %d iterations\n", numCycles);
-	for (int d = 0; d < levels; d++) {
-		printf("level %d\n", d);
-		int size = 1<<d;
-		for (int i = 0; i < size; i++) {
-			for (int j = 0; j < size; j++) {
-				if (grid[d][i*size+j].used) {
-					printf(" %.3f", grid[d][i*size+j].p);
-				} else {
-					printf("      ");
-				}
-			}
-			printf("\n");
-		}
-	}*/
 	//printValue(P);
 
 	// increase frame number here instead of in display so that you get 1 of each frame, not dependent on glut's redrawing, like on alt-tabbing or anything
@@ -1828,8 +1502,6 @@ void initPoissonTest(qNode* node) {
 	double y = (node->i + 0.5)/size;
 
 	node->p = 0;
-	
-	//node->p = (.5-x)*(.5-x) + (.5-y)*(.5-y); // use pressure gradient split to make multilevel
 	
 }
 
@@ -2105,10 +1777,7 @@ double calculateError(qNode* node, double* avgError) {
 		for (int k = 0; k < 4; k++) {
 			// calculate gradient in direction k
 			int ml = levels - 1;
-			double otherp = node->getValueInDir(k, P, &ml);
-			double h = 0.5/size + 0.5/(1<<ml);
-			double calc = (otherp - node->p) / h;
-			double calc2 = node->getFaceGradient(ml, k, P);
+			double calc = node->getFaceGradient(ml, k, P);
 			
 			double x = (node->j + 0.5 + 0.5*deltas[k][1])/size;
 			double y = (node->i + 0.5 + 0.5*deltas[k][0])/size;
@@ -2117,7 +1786,7 @@ double calculateError(qNode* node, double* avgError) {
 				// switch directions because other way
 				real = -real;
 			}
-			double error = fabs(real - calc2);
+			double error = fabs(real - calc);
 			printf("Error for node %d: (%d, %d) in dir %d, ", node->level, node->i, node->j, k);
 			if (ml == node->level) {
 				printf(" at the same level.");
@@ -2126,7 +1795,7 @@ double calculateError(qNode* node, double* avgError) {
 			} else {
 				printf(" down %d levels.", ml - node->level);
 			}
-			printf("real: %f, calc: %f, error: %f\n", real, calc2, error);
+			printf("real: %f, calc: %f, error: %f\n", real, calc, error);
 			*avgError += error/size/size;
 			max = fmax(max, error);
 		}
