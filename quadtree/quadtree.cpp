@@ -121,6 +121,8 @@ enum PoissonTestFunc { POISSONFUNCNONE, POISSONXY, POISSONCOS, POISSONCOSKL };
 PoissonTestFunc poissonTestFunc = POISSONFUNCNONE;
 enum ErrorTestFunc { ERRORFUNCNONE, ERRORXY, ERRORCOS, ERRORCOSKL };
 ErrorTestFunc errorTestFunc = ERRORFUNCNONE;
+enum ProjectTestFunc { PROJECTFUNCNONE, PROJECTXY, PROJECTSIN/*, TODO real h-h function*/ };
+ProjectTestFunc projectTestFunc = PROJECTFUNCNONE;
 
 double dt = .03;
 
@@ -1831,8 +1833,43 @@ void initPoissonTest(qNode* node) {
 	
 }
 
+void initProjectTest(qNode* node) {
+	int size = 1<<node->level;
+	node->p = 0.0;
+	node->dp = 0.0;
+
+	assert (projectTestFunc != PROJECTFUNCNONE);
+
+	double x = ((float)node->j)/size;
+	double y = ((float)node->i)/size;
+
+	if (projectTestFunc == PROJECTXY) {
+		node->vx = (node->j+0.5)*(node->j+0.5)/size/size;
+		node->vy = 1-(node->i+0.5)*(node->i+0.5)/size/size;
+	
+		node->vx2 = (node->j+1.5)*(node->j+1.5)/size/size;
+		node->vy2 = 1-(node->i+1.5)*(node->i+1.5)/size/size;
+	} else if (projectTestFunc == PROJECTSIN) {
+		// vx
+		double x2 = x;
+		double y2 = y + 0.5/size;
+		node->vx = 2*M_PI*sin(2*M_PI*x2) - 2*M_PI*sin(2*M_PI*x2)*cos(2*M_PI*y2);
+
+		x2 = x+1.0/size;
+		node->vx2 = 2*M_PI*sin(2*M_PI*x2) - 2*M_PI*sin(2*M_PI*x2)*cos(2*M_PI*y2);
+
+		//vy
+		x2 = x + 0.5/size;
+		y2 = y;
+		node->vy = 2*M_PI*sin(2*M_PI*y2) - 2*M_PI*cos(2*M_PI*x2)*sin(2*M_PI*y2);
+
+		y2 = y + 1.0/size;
+		node->vy2 = 2*M_PI*sin(2*M_PI*y2) - 2*M_PI*cos(2*M_PI*x2)*sin(2*M_PI*y2);	
+	}
+}
+
 void initNodeFunction(qNode* node) {
-	if (startState == LEFT || startState == ERRORTEST || startState == PROJECTTEST)
+	if (startState == LEFT || startState == ERRORTEST)
 		initNodeLeftUniform(node);
 	else if (startState == SINK)
 		initNodeSink(node);
@@ -1840,6 +1877,8 @@ void initNodeFunction(qNode* node) {
 		initNodeSrcSink(node);
 	else if (startState == POISSONTEST || startState == ADAPTTEST)
 		initPoissonTest(node);
+	else if (startState == PROJECTTEST)
+		initProjectTest(node);
 	else
 		printf("invalid start state\n");
 }
@@ -2160,24 +2199,6 @@ void runAdaptTest() {
 
 }
 
-void initProjectTest(qNode* node) {
-	if (node->leaf) {
-		int size = 1<<node->level;
-		node->p = 0.0;
-		node->dp = 0.0;
-
-		node->vx = (node->j+0.5)*(node->j+0.5)/size/size;
-		node->vy = 1-(node->i+0.5)*(node->i+0.5)/size/size;
-
-		node->vx2 = (node->j+1.5)*(node->j+1.5)/size/size;
-		node->vy2 = 1-(node->i+1.5)*(node->i+1.5)/size/size;
-	} else {
-		for (int k = 0; k < 4; k++) {
-			initProjectTest(node->children[k]);
-		}
-	}
-}
-
 void runProjectTest() {
 	if (adaptScheme != ADAPTNONE) {
 		expandRadius(root, .3);
@@ -2358,6 +2379,7 @@ int main(int argc, char** argv) {
 	adaptScheme = ADAPTNONE;
 	adaptTestFunc = ADAPTFUNCNONE;
 	poissonTestFunc = POISSONFUNCNONE;
+	projectTestFunc = PROJECTFUNCNONE;
 	startState = LEFT;
 	for (int i = 1; i < argc; i++) {
 		char* arg = argv[i];
@@ -2453,6 +2475,14 @@ int main(int argc, char** argv) {
 			}
 		} else if (!strcmp("projecttest", arg)) {
 			startState = PROJECTTEST;
+			char* func = argv[++i];
+			if (!strcmp("xy", func)) {
+				projectTestFunc = PROJECTXY;
+			} else if (!strcmp("sin", func)) {
+				projectTestFunc = PROJECTSIN;
+			} else {
+				return 1;
+			}
 		} else if (!strcmp("-pre", arg)) {
 			warmupRuns = atoi(argv[++i]);
 		}
