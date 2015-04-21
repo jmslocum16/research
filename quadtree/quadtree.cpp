@@ -1827,6 +1827,7 @@ void runErrorTest() {
 
 void setAdaptTestValues(qNode* node) {
 	// sets velocity for rendering n shit
+	node->p = 0.0;
 	int size = 1<<node->level;
 	double x = (node->j + 0.5)/size;
 	double y = (node->i + 0.5)/size;
@@ -1849,6 +1850,7 @@ void setAdaptTestValues(qNode* node) {
 
 void runAdaptTest() {	
 	setAdaptTestValues(root);
+	setAdaptTestValues(oldRoot);
 	assert(adaptScheme == CURL);
 	std::swap(root, oldRoot);
 	advectAndCopy();
@@ -1856,8 +1858,11 @@ void runAdaptTest() {
 	int numCycles = -1;
 	while (!done) {
 		std::swap(root, oldRoot);
-		done = recursiveAdaptAndCopy(root, oldRoot);
+		done = !recursiveAdaptAndCopy(root, oldRoot);
+		std::swap(root, oldRoot);
+		copy(root, oldRoot);
 		setAdaptTestValues(root);
+		setAdaptTestValues(oldRoot);
 		numCycles++;
 	}
 	printf("number of adapts done: %d\n", numCycles);
