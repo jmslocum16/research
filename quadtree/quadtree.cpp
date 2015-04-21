@@ -62,6 +62,7 @@ bool drawVelocity;
 bool drawCells;
 bool screenshot;
 int numToRun = 0;
+int warmupRuns = 0;
 
 // profiling
 int numLeaves, numNodes;
@@ -644,7 +645,7 @@ class qNode {
 				this->children[k] = new qNode(this, 2*i+(k/2), 2*j+(k%2));
 
 				if (calculateNewVals) {
-					assert (false);
+					//assert (false);
 					/*
 	        		int constX = k%2 == 0 ? -1 : 1;
 	        		int constY = k/2 == 0 ? -1 : 1;
@@ -1831,13 +1832,13 @@ void initPoissonTest(qNode* node) {
 }
 
 void initNodeFunction(qNode* node) {
-	if (startState == LEFT || startState == ADAPTTEST || startState == ERRORTEST || startState == PROJECTTEST)
+	if (startState == LEFT || startState == ERRORTEST || startState == PROJECTTEST)
 		initNodeLeftUniform(node);
 	else if (startState == SINK)
 		initNodeSink(node);
 	else if (startState == SRCSINK)
 		initNodeSrcSink(node);
-	else if (startState == POISSONTEST)
+	else if (startState == POISSONTEST || startState == ADAPTTEST)
 		initPoissonTest(node);
 	else
 		printf("invalid start state\n");
@@ -1955,24 +1956,18 @@ void expandRadius(qNode* node, double radius) {
 	}
 }
 
-void runPoissonTest() {
-	// adapt
-	if (adaptScheme != ADAPTNONE) {
-		expandRadius(root, .3);
-		expandRadius(root, .2);
-	}
-
+void runPoissonTest(bool print) {
 	// set all pressure to 0 again
 	assert(poissonTestFunc != POISSONFUNCNONE);
 	poissonReset(root);
 	
 	double initialResidual = computeResidual(root);
-	printf("initial residual: %f\n", initialResidual);
+	//printf("initial residual: %f\n", initialResidual);
 
 	// try manually fixing residual
 	double avgR = 0.0;
 	poissonAverageR(root, &avgR);
-	printf("new average residual: %f\n", avgR);
+	//printf("new average residual: %f\n", avgR);
 	poissonCorrectR(root, avgR);
 	
 	// run V cycles, compute stuff
@@ -1980,19 +1975,22 @@ void runPoissonTest() {
 
 	double newR, oldR;
 	newR = initialResidual;
+	double avgError;
 
-	startTime();
+	if (print) {
+		startTime();
+	}
 	while (!doneVCycle) {
 		i++;
 		oldR = newR;
 		newR = runVCycle();
-		printf("residual after %d vcycles: %f\n", i, newR);
+		//printf("residual after %d vcycles: %f\n", i, newR);
 		double total = 0.0;
 		//double K = 0.0;
 		//poissonAverage(root, &K);
-		double avgError = 0.0;
+		avgError = 0.0;
 		computePoissonError(root,  &avgError);
-		printf("average error after %d vcycles: %f\n", i, avgError);
+		//printf("average error after %d vcycles: %f\n", i, avgError);
 
 		// try manually fixing residual
 		avgR = 0.0;
@@ -2003,9 +2001,11 @@ void runPoissonTest() {
 		//doneVCycle |= fabs(newR-oldR) < eps/100;
 		doneVCycle = getMaxR(root) < eps;
 	}
-	endTime("poisson test");
-	
-	printf("poisson test took %d vcycles\n", i);
+	if (print) {
+		endTime("poisson test");	
+		printf("poisson test took %d vcycles\n", i);
+		printf("average error: %f\n", avgError);
+	}
 
 	//printPressure();
 }
@@ -2252,7 +2252,8 @@ void initSim() {
 			startLevel = levels - 3;
 	} else if (startState == ADAPTTEST) {
 		assert(levels > 3);
-		startLevel = std::max(levels - 4, levels/2 + 1);
+		//startLevel = std::max(levels - 4, levels/2 + 1);
+		startLevel = levels - 3;
 	}
 
 
@@ -2261,7 +2262,22 @@ void initSim() {
 	computeNodalValues(root);
 	
 	if (startState == POISSONTEST) {
-		runPoissonTest();
+		// adapt
+		if (adaptScheme != ADAPTNONE) {
+			//expandRadius(root, .3);
+			//expandRadius(root, .2);
+			runAdaptTest();
+		}
+
+		for (int i = 0; i < warmupRuns; i++) {
+			runPoissonTest(false);
+		}
+
+		if (numToRun == 0) numToRun++;
+		for (int i = 0; i < numToRun; i++) {
+			runPoissonTest(true);
+		}
+		numToRun = 0;
 		return;
 	} else if (startState == ADAPTTEST) {
 		runAdaptTest();
@@ -2389,12 +2405,24 @@ int main(int argc, char** argv) {
 		} else if (!strcmp("poissontest", arg)) {
 			startState = POISSONTEST;
 			char* func = argv[++i];
+			char* adapt = argv[++i];
 			if (!strcmp("xy", func)) {
 				poissonTestFunc = POISSONXY;
 			} else if (!strcmp("cos", func)) {
 				poissonTestFunc = POISSONCOS;
 			} else if (!strcmp("coskl", func)) {
 				poissonTestFunc = POISSONCOSKL;
+			} else {
+				return 1;
+			}
+			if (!strcmp("none", adapt)) {
+				adaptTestFunc = ADAPTFUNCNONE;
+			} else if (!strcmp("xy", adapt)) {
+				adaptTestFunc = ADAPTXY;
+			} else if (!strcmp("sin", adapt)) {
+				adaptTestFunc = ADAPTSIN;
+			} else if (!strcmp("parabola", adapt)) {
+				adaptTestFunc = PARABOLA;
 			} else {
 				return 1;
 			}
@@ -2410,6 +2438,7 @@ int main(int argc, char** argv) {
 			} else {
 				return 1;
 			}
+			adaptScheme = CURL;
 		} else if (!strcmp("errortest", arg)) {
 			startState = ERRORTEST;
 			char* func = argv[++i];
@@ -2424,6 +2453,8 @@ int main(int argc, char** argv) {
 			}
 		} else if (!strcmp("projecttest", arg)) {
 			startState = PROJECTTEST;
+		} else if (!strcmp("-pre", arg)) {
+			warmupRuns = atoi(argv[++i]);
 		}
 	}
 	//levelToDisplay = levels/2;
