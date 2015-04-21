@@ -141,6 +141,21 @@ std::pair<double, double> getGradient(double vals[], int sizes[], int size) {
 	return std::make_pair((vals[2] - vals[3])/(0.5/sizes[2] + 0.5/sizes[3] + 1.0/size), (vals[0]-vals[1])/(0.5/sizes[0] + 0.5/sizes[1] + 1.0/size));	
 }
 
+// returns velocity with each term bilinearly interpolated from nodal values
+/*
+ a------b
+ |  |   |
+ |  |di |
+ |--    |
+ | dj   |
+ |      |
+ c------d
+ */
+double bilinearInterpolation(double a, double b, double c, double d, double di, double dj) {
+	return a * (1-di) * (1-dj) + b * (1-di) * dj + c * di * (1-dj) + d * di * dj;
+}
+
+
 int nodeId = 0;
 enum NodeValue { P, VX, VY, PHI, DP, DIVV };
 class qNode {
@@ -155,7 +170,10 @@ class qNode {
 
 		// math stuffs
 		double p, dp, R, phi, divV, temp; // pressure ,x velocity, y velocity, pressure correction, residual, level set value
-		double vx, vy, vx2, vy2, cvx, cvy;
+		double vx, vy, vx2, vy2;
+		//double cvx[4];
+		//double cvy[4];
+		double cvx, cvy;
 
 		qNode(qNode *p, int i, int j): parent(p), i(i), j(j) {
 			if (parent == NULL) {
@@ -538,18 +556,68 @@ class qNode {
 			}
 		}
 
-		std::pair<double, double> getVelocityAt(double x, double y) {
-			return std::make_pair(getValueAt(x, y, VX), getValueAt(x, y, VY));
+		std::pair<double, double> getNodal(int nl, int ni, int nj) {
+			int nsize = 1<<nl;
+			double x, y;
+			if (nj == 0 || nj == nsize) {
+				x = 0.0;
+			} else if (ni == 0 || ni ==nsize) {
+				//x = 2*vx - get(nl, ni+1, nj)->getNodal(nl, ni+1, nj);
+				x = vx;
+			} else {
+				x = cvx;
+			}
+			if (ni == 0 || ni == nsize) {
+				y = 0.0;
+			} else if (nj == 0 || nj == nsize) {
+				y = vy;
+			} else {
+				y = cvy;
+			}
+			return std::make_pair(x, y);
+		}
+
+		std::pair<double, double> getNodalAt(qNode* r, int i, int j) {
+			if (i == 0 && j == 0) {
+				return getNodal(level, i, j);
+			} else if (i == 0 && j == 0) {
+				return r->get(level, i, j+1)->getNodal(level, i, j+1);
+			} else if (i == 1 && j == 0) {
+				return r->get(level, i+1, j)->getNodal(level, i+1, j);
+			} else if (i == i && j == 1) {
+				return r->get(level, i+1, j+1)->getNodal(level, i+1, j+1);
+			} else {
+				assert(false);
+			}
+		}
+
+		std::pair<double, double> getVelocityAt(qNode* r, double x, double y) {
+			//return std::make_pair(getValueAt(x, y, VX), getValueAt(x, y, VY));
+			// TODO
+			int size = 1<<level;
+			double minX = ((float)j)/size;
+			double minY = ((float)i)/size;
+			assert (!(x < minX || y < minY || x > minX + 1.0/size || y > minY + 1.0/size));
+
+			double di = (x*size)-i;
+			double dj = (y*size)-j;
+			
+			std::pair<double, double> c00 = getNodalAt(r, 0, 0);
+			std::pair<double, double> c01 = getNodalAt(r, 0, 1);
+			std::pair<double, double> c10 = getNodalAt(r, 1, 0);
+			std::pair<double, double> c11 = getNodalAt(r, 1, 1);
+
+			// x
+			double newvx = bilinearInterpolation(c00.first, c01.first, c10.first, c11.first, di, dj);
+			double newvy = bilinearInterpolation(c00.second, c01.second, c10.second, c11.second, di, dj);	
+			return std::make_pair(newvx, newvy);
+
 		}
 		
 		double getValueAt(double x, double y, NodeValue v) {
 			double val;
 			if (v == P)
 				val = p;
-			else if (v == VX)
-				val = vx;
-			else if (v == VY)	
-				val = vy;
 			else if (v == PHI)
 				val = phi;
 			else if (v == DP)
@@ -567,6 +635,7 @@ class qNode {
 		// adaptivity
 		void expand(bool calculateNewVals) {
 			assert(leaf);
+			// TODO
     		//printf("expanding cell %d, (%d, %d)\n", level, i, j);
     		int size = 1<<level;
     		// std::pair<double, double> levelSetGrad;
@@ -575,6 +644,8 @@ class qNode {
 				this->children[k] = new qNode(this, 2*i+(k/2), 2*j+(k%2));
 
 				if (calculateNewVals) {
+					assert (false);
+					/*
 	        		int constX = k%2 == 0 ? -1 : 1;
 	        		int constY = k/2 == 0 ? -1 : 1;
 					double newx = (j + 0.5)/size + (constX*.25)/size;
@@ -587,6 +658,7 @@ class qNode {
         			children[k]->vx = newVel.first;
         			children[k]->vy = newVel.second;
         			// children[k]->phi = ...
+					*/
 				}
     		}
 			setChildrenNeighbors();
@@ -616,6 +688,29 @@ class qNode {
 				}
 			}
 		}
+
+
+		// current node, target d/i/j
+		
+		qNode* get(int nd, int ni, int nj) {
+			/*if (node->level == d) {
+				assert(node->i == i);
+				assert(node->j == j);
+				return node;
+			} else if (node->leaf) return NULL;
+			*/
+			if (leaf) return this;
+			int leveldif = nd - level;
+			int midsize = 1<<(leveldif-1);
+			int midi = i*(1<<leveldif) + midsize;
+			int midj = j*(1<<leveldif) + midsize;
+			int newi = (ni < midi) ? 0 : 1;
+			int newj = (nj < midj) ? 0 : 1;
+			return children[newi*2+newj]->get(nd, ni, nj);
+		}
+
+
+		
 };
 
 
@@ -624,24 +719,6 @@ qNode* oldRoot;
 
 
 // debugging
-
-// current node, target d/i/j
-qNode* get(qNode* node, int i, int j) {
-	/*if (node->level == d) {
-		assert(node->i == i);
-		assert(node->j == j);
-		return node;
-	} else if (node->leaf) return NULL;
-	*/
-	if (node->leaf) return node;
-	int leveldif = (levels - 1) - node->level;
-	int midsize = 1<<(leveldif-1);
-	int midi = node->i*(1<<leveldif) + midsize;
-	int midj = node->j*(1<<leveldif) + midsize;
-	int newi = (i < midi) ? 0 : 1;
-	int newj = (j < midj) ? 0 : 1;
-	return get(node->children[newi*2+newj], i, j);
-}
 
 qNode* getLeaf(qNode* node, double x, double y, int ml) {
 	int size = 1<<node->level;
@@ -664,7 +741,7 @@ qNode*  getSemiLagrangianLookback(qNode* r, double* x, double* y, int steps, int
 	double newdt = dt / steps;
 	qNode* cur = getLeaf(r, *x, *y, ml);
 	while (steps--) {
-		std::pair<double, double> vel = cur->getVelocityAt(*x, *y);
+		std::pair<double, double> vel = cur->getVelocityAt(r, *x, *y);
 		*x -= vel.first * newdt;
 		*y -= vel.second * newdt;
 		*x = fmin(1.0, fmax(0, *x));
@@ -679,7 +756,7 @@ void printValue(NodeValue v) {
 	int size = 1<<(levels - 1);
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
-			qNode* n = get(root, i, j);
+			qNode* n = root->get(levels - 1, i, j);
 			if (n != NULL) {
 				printf(" %.4f", n->getVal(v));
 			} else {
@@ -980,6 +1057,53 @@ void testNeighbors() {
 	}
 }
 
+
+void testAdvect() {
+	int oldLevels = levels;
+	double oldDt = dt;
+
+	dt = 0.0;
+	levels = 2;
+
+	root = new qNode(NULL, 0, 0);
+	oldRoot = new qNode(NULL, 0, 0);
+	root->expand(false);
+	root->children[0]->expand(false);
+	oldRoot->expand(false);
+	oldRoot->children[0]->expand(false);
+
+	oldRoot->children[0]->vx = 0.0;
+	oldRoot->children[0]->vy = 0.0;
+	oldRoot->children[0]->vx2 = 1.0;
+	oldRoot->children[0]->vy2 = 2.0;
+
+	oldRoot->children[1]->vx = 1.0;
+	oldRoot->children[1]->vy = 0.0;
+	oldRoot->children[1]->vx2 = 0.0;
+	oldRoot->children[1]->vy2 = 4.0;
+
+	oldRoot->children[2]->vx = 0.0;
+	oldRoot->children[2]->vy = 2.0;
+	oldRoot->children[2]->vx2 = 3.0;
+	oldRoot->children[2]->vy2 = 0.0;
+
+	oldRoot->children[3]->vx = 3.0;
+	oldRoot->children[3]->vy = 4.0;
+	oldRoot->children[3]->vx2 = 0.0;
+	oldRoot->children[3]->vy2 = 0.0;
+
+	// next level
+	oldRoot->children[0]->children[0]->vx = 0.0;
+	oldRoot->children[0]->children[0]->vy = 0.0;
+	oldRoot->children[0]->children[0]->vx2 = -1;
+	oldRoot->children[0]->children[0]->vy2 = 8;
+
+	delete root;
+	delete oldRoot;
+	levels = oldLevels;
+	dt = oldDt;
+}
+
 // poisson solver functions
 
 // returns max(abs(R))
@@ -1236,7 +1360,7 @@ bool recursiveAdaptAndCopy(qNode* node, qNode* oldNode) {
 	
 }
 
-void advectAndCopy(qNode* node, qNode* oldNode) {
+void copy(qNode* node, qNode* oldNode) {
 	// need to create/delete new nodes if it adapted
 	if (node->leaf && !oldNode->leaf) {
 		// old node expanded, expand new node
@@ -1246,37 +1370,99 @@ void advectAndCopy(qNode* node, qNode* oldNode) {
 		node->contract(); // TODO this doesn't handle multiple contractions per step, but rn only do single contract/expand per step
 	}
 	
-	// copy values
 	node->p = oldNode->p;
-	node->vx = oldNode->vx;
-	node->vy = oldNode->vy;
-	//node->phi = oldNode->phi;
-
-
-	// semi lagrangian advection - copy value at t - dt
-	int size = 1<<node->level;
-	double x = (node->j + 0.5)/size;
-	double y = (node->i + 0.5)/size;
-	qNode* last= getSemiLagrangianLookback(oldRoot, &x, &y, 1, node->level);
-	//printf("lookback from node %d (%d, %d) gives %d (%d, %d)", node->level, node->i, node->j, last->level, last->i, last->j);
-	//std::pair<double, double> velInterp = last->getVelocityAt(x, y);
-
-	//node->vx = velInterp.first;
-	//node->vy = velInterp.second;
-
-	node->vx = last->getValueAt(x, y, VX);
-	node->vy = last->getValueAt(x, y, VY);
-
-	// add gravity TODO(make better)
-	//grid[index].vy -= .98 * dt;
-	// density of water is 1000kg/m^3, so 100kg/m^2?.. density = M/V,so mass = V * density = density/(size+2)
-	//grid[index].vy -= dt * 9.8*100.0/size/size;
 
 	if (!node->leaf) {
 		for (int k = 0; k < 4; k++) {
-			advectAndCopy(node->children[k], oldNode->children[k]);
+			copy(node->children[k], oldNode->children[k]);
 		}
 	}
+}
+
+// assumes face values set
+void computeNodalValues(qNode* node) {
+	if (node->leaf) {
+		if (node->i == 0 || node->j == 0) {
+			node->cvx = 0.0;
+			node->cvy = 0.0;
+			return;
+		}
+		//x
+		qNode* n = node;
+		while (n->neighbors[3] == NULL) n = n->parent;
+		node->cvx = (n->vx + n->neighbors[3]->vx)/2.0;
+
+		// y
+		n = node;
+		while (n->neighbors[1] == NULL) n = n->parent;
+		node->cvy = (n->vy + n->neighbors[1]->vy)/2.0;
+	} else {
+		for (int k = 0; k < 4; k++) {
+			computeNodalValues(node->children[k]);
+		}
+		node->cvx = node->children[0]->cvx;
+		node->cvy = node->children[0]->cvy;
+	}
+}
+
+void setNewAdvect(qNode* node) {
+	if (node->leaf) {
+		if (node->i == 0 || node->j == 0) {
+			node->cvx = 0.0;
+			node->cvy = 0.0;
+			return;
+		}
+		int size = 1<<node->level;
+		double x = (node->j + 0.5)/size;
+		double y = (node->i + 0.5)/size;
+		qNode* last= getSemiLagrangianLookback(oldRoot, &x, &y, 1, node->level);
+		// TODO implement
+		std::pair<double, double> newvel = last->getVelocityAt(oldRoot, x, y);
+		node->cvx = newvel.first;
+		node->cvy = newvel.second;
+	} else {
+		for (int k = 0; k < 4; k++) {
+			setNewAdvect(node->children[k]);
+		}
+		node->cvx = node->children[0]->cvx;
+		node->cvy = node->children[0]->cvy;
+	}
+}
+
+
+// TODO put on node class
+void setNewFace(qNode* node) {
+	int l = node->level;
+	int i = node->i;
+	int j = node->j;
+	// TODO this is innacurate at T-junctions on edge?
+	std::pair<double, double> c00 = node->getNodalAt(root, 0, 0);
+	std::pair<double, double> c01 = node->getNodalAt(root, 0, 1);
+	std::pair<double, double> c10 = node->getNodalAt(root, 1, 0);
+	std::pair<double, double> c11 = node->getNodalAt(root, 1, 1);
+	node->vx = (c00.first + c10.first)/2.0;
+	node->vy = (c00.second + c01.second)/2.0;
+	node->vx2 = (c01.first + c11.first)/2.0;
+	node->vy2 = (c10.second + c11.second)/2.0;
+
+	if (!node->leaf) {
+		for (int k = 0; k < 4; k++) {
+			setNewFace(node->children[k]);
+		}
+	}
+}
+
+void advectAndCopy() {
+
+	copy(root, oldRoot);
+
+	// assume nodal values have been computed on old tree
+	// set nodal values on new tree to advected nodal values on old tree
+	setNewAdvect(root);
+
+	// set new face values from nodal values
+	setNewFace(root);
+
 }
 
 void correctPressure(qNode* node) {
@@ -1295,21 +1481,35 @@ void project(qNode* node) {
 	// correct velocity with updated pressure field to make non-divergent
 //	std::pair<double, double> grad = node->getValueGradient(P);
 	if (node->leaf) {
-		if (node->i == 0 || node->j == 0) return;
-		double pgradX = -node->getFaceGradient(levels - 1, 3, P);
-		double pgradY = -node->getFaceGradient(levels - 1, 1, P);
-		node->vx -= pgradX;
-		node->vy -= pgradY;
-
-		pgradX = node->getFaceGradient(levels - 1, 2, P);
-		pgradY = node->getFaceGradient(levels - 1, 0, P);
-		node->vx2 -= pgradX;
-		node->vy2 -= pgradY;
+		//if (node->i == 0 || node->j == 0) return;
+		double pgradX, pgradY;
+		int size = 1<<node->level;
+		if (node->j > 0) {
+			pgradX = -node->getFaceGradient(levels - 1, 3, P);
+			node->vx -= pgradX;
+		}
+		if (node->i > 0) {
+			pgradY = -node->getFaceGradient(levels - 1, 1, P);
+			node->vy -= pgradY;
+		}
+		if (node->j < size - 1) {
+			pgradX = node->getFaceGradient(levels - 1, 2, P);
+			node->vx2 -= pgradX;
+		}
+		if (node->i < size - 1) {
+			pgradY = node->getFaceGradient(levels - 1, 0, P);
+			node->vy2 -= pgradY;
+		}
 		
 	} else {
 		for (int k = 0; k < 4; k++) {
 			project(node->children[k]);
 		}
+
+		node->vx = (node->children[0]->vx + node->children[2]->vx)/2.0;
+		node->vy = (node->children[0]->vy + node->children[1]->vy)/2.0;
+		node->vx2 = (node->children[2]->vx2 + node->children[3]->vx2)/2.0;
+		node->vy2 = (node->children[1]->vy2 + node->children[3]->vy2)/2.0;
 	}
 }
 
@@ -1336,7 +1536,7 @@ void eulerAdvectParticle(Particle& p, std::pair<double, double> v) {
 
 void advectParticles() {
 	for (int i = 0; i < numParticles; i++) {
-		std::pair<double, double> vGrad = getLeaf(root, particles[i].x, particles[i].y, levels-1)->getVelocityAt(particles[i].x, particles[i].y);
+		std::pair<double, double> vGrad = getLeaf(root, particles[i].x, particles[i].y, levels-1)->getVelocityAt(root, particles[i].x, particles[i].y);
 		if (particleAlgorithm == EULER) {
 			eulerAdvectParticle(particles[i], vGrad);
 		}
@@ -1454,7 +1654,7 @@ void runStep() {
 	// advect velocity, copy old stuff
 	printf("advecting velocity\n");
 	startTime();
-	advectAndCopy(root, oldRoot);
+	advectAndCopy();
 	totalTime += endTime("advecting and copying");
 	
 	printf("computing divV\n");
@@ -1943,7 +2143,7 @@ void runAdaptTest() {
 	setAdaptTestValues(root);
 	assert(adaptScheme == CURL);
 	std::swap(root, oldRoot);
-	advectAndCopy(root, oldRoot);
+	advectAndCopy();
 	bool done = false;
 	int numCycles = -1;
 	while (!done) {
@@ -2055,7 +2255,11 @@ void initSim() {
 		startLevel = std::max(levels - 4, levels/2 + 1);
 	}
 
+
 	initRecursive(root, startLevel);
+
+	computeNodalValues(root);
+	
 	if (startState == POISSONTEST) {
 		runPoissonTest();
 		return;
@@ -2069,8 +2273,6 @@ void initSim() {
 		runProjectTest();
 		return;
 	}
-
-	clampVelocity(root);
 
 	if (particleAlgorithm != PARTICLENONE) {
 
