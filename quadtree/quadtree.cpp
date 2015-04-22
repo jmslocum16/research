@@ -1966,7 +1966,7 @@ void adaptTestRecursive(qNode* node) {
 	if (node->level == levels - 1) {
 		return;
 	}
-		if (node->leaf) {
+	if (node->leaf) {
 		int size = 1<<node->level;
 		double x1, y1, x2, y2;
 		x1 = ((float)node->j)/size;

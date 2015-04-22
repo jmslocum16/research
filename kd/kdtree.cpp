@@ -117,7 +117,7 @@ enum StartState { LEFT, SINK, SRCSINK, POISSONTEST, ADAPTTEST , ERRORTEST, PROJE
 StartState startState;
 enum AdaptScheme { ADAPTNONE, CURL, PGRAD };
 AdaptScheme adaptScheme = ADAPTNONE;
-enum AdaptTestFunc { ADAPTFUNCNONE, ADAPTXY, ADAPTSIN, PARABOLA };
+enum AdaptTestFunc { ADAPTFUNCNONE, ADAPTCIRCLE, ADAPTWAVE };
 AdaptTestFunc adaptTestFunc = ADAPTFUNCNONE;
 enum PoissonTestFunc { POISSONFUNCNONE, POISSONXY, POISSONCOS, POISSONCOSKL };
 PoissonTestFunc poissonTestFunc = POISSONFUNCNONE;
@@ -421,26 +421,11 @@ class kdNode {
 		
 		// curl(F) = d(Fy)/dx - d(Fx)/dy
 		double getCurl() {
-			if (adaptTestFunc == ADAPTFUNCNONE) {
-				assert(false);
-				//std::pair<double, double> xgrad = getVelocitySingleGradient(true);
-				//std::pair<double, double> ygrad = getVelocitySingleGradient(false);
-				std::pair<double, double> xgrad = getValueGradient(VX);
-				std::pair<double, double> ygrad = getValueGradient(VY);
-				return ygrad.first - xgrad.second;
-			}
-			int size_i = 1<<level_i;
-			int size_j = 1<<level_j;
-			double x = (j + 0.5)/size_j;
-			double y = (i + 0.5)/size_i;
-			if (adaptTestFunc == ADAPTXY) {
-				return .5*x*y;
-			} else if (adaptTestFunc == ADAPTSIN) {
-				return .2*sin(M_PI*x)*sin(M_PI*y);
-			} else if (adaptTestFunc == PARABOLA) {
-				return (.5-x)*(.5-y);
-			}
 			assert(false);
+			// TODO fix
+			std::pair<double, double> xgrad = getValueGradient(VX);
+			std::pair<double, double> ygrad = getValueGradient(VY);
+			return ygrad.first - xgrad.second;
 		}
 
 		void computeVelocityDivergence() {
@@ -806,6 +791,148 @@ void drawParticles() {
 	glEnd();
 }
 
+double adaptScale = 0.6;
+double wavePeriod = 2;
+double offsetY = 0.0;
+
+bool pointInCircle(double circleCenterX, double circleCenterY, double circleRadius, double x, double y) {
+	return (circleCenterX-x)*(circleCenterX-x)+(circleCenterY-y)*(circleCenterY-y) <= (circleRadius * circleRadius);
+}
+
+bool lineIntersectCircle(double circleCenterX, double circleCenterY, double circleRadius, double x1, double y1, double x2, double y2) {
+	if (pointInCircle(circleCenterX, circleCenterY, circleRadius, x1, y1) && pointInCircle(circleCenterX, circleCenterY, circleRadius, x2, y2)) return false;
+	if (pointInCircle(circleCenterX, circleCenterY, circleRadius, x1, y1) ^ pointInCircle(circleCenterX, circleCenterY, circleRadius, x2, y2)) return true;
+	
+	// build vector a from point to radius, project it onto current vector b
+	double bx = x2-x1;
+	double by = y2-y1;
+	double ax = circleCenterX - x1;
+	double ay = circleCenterY - y1;
+	
+	double adotb = ax*bx + ay*by;
+	double magA = sqrt(ax*ax + ay*ay);
+	double magB = sqrt(bx*bx + by*by);
+	double a1 = adotb/magB;
+	
+	if (a1 >= 0 && a1 <= magB) {
+		double ax1 = x1 + a1*bx/magB;
+		double ay1 = y1 + a1*by/magB;
+	
+		double cx = ax1 - circleCenterX;
+		double cy = ay1 - circleCenterY;
+		
+		return (cx*cx + cy*cy) <= (circleRadius * circleRadius);
+	} else {
+		bx = circleCenterX - x2;
+		by = circleCenterY - y2;
+		return (ax * ax + ay*ay) <= (circleRadius*circleRadius) || (bx*bx+by*by) <= (circleRadius * circleRadius);
+	}
+}
+
+bool rectIntersectFuncCircle(double x1, double y1, double x2, double y2) {
+	double circleCenterX = 0.5;
+	double circleCenterY = 0.5 + offsetY;
+	double circleRadius = .5*adaptScale;
+
+	double xmin = fmin(x1, x2);
+	double xmax = fmax(x1, x2);
+	double ymin = fmin(y1, y2);
+	double ymax = fmax(y1, y2);
+
+	
+	if(lineIntersectCircle(circleCenterX, circleCenterY, circleRadius, xmin, ymin, xmax, ymin)) return true;
+	if(lineIntersectCircle(circleCenterX, circleCenterY, circleRadius, xmin, ymin, xmin, ymax)) return true;
+	if(lineIntersectCircle(circleCenterX, circleCenterY, circleRadius, xmax, ymax, xmax, ymin)) return true;
+	if(lineIntersectCircle(circleCenterX, circleCenterY, circleRadius, xmax, ymax, xmin, ymax)) return true;
+	return false;
+}
+
+double getWaveFunc(double x) {
+	return .5 + adaptScale*.5*cos(wavePeriod*2*M_PI*x) + offsetY;
+}
+
+bool waveIntersectHoriz(double x1, double x2, double y) {
+	// break into parts by period
+	int numParts = wavePeriod * 2;
+	double periodWidth = 1.0/numParts;
+	for (int i = 0; i < numParts; i++) {
+		double periodStartX = i*periodWidth;
+		double periodEndX = periodStartX + periodWidth;
+		if (periodEndX < x1 || periodStartX > x2) continue;
+		periodStartX = fmax(periodStartX, x1);
+		periodEndX = fmin(periodEndX, x2);
+	
+		double periodStartY = getWaveFunc(periodStartX);
+		double periodEndY = getWaveFunc(periodEndX);
+
+		double ymin = fmin(periodStartY, periodEndY);
+		double ymax = fmax(periodStartY, periodEndY);
+		if (ymin <= y && y <= ymax) return true;
+	}
+	return false;
+}
+
+bool rectIntersectFuncWave(double x1, double y1, double x2, double y2) {
+	double ymin = fmin(y1, y2);
+	double ymax = fmax(y1, y2);
+
+	double fy = getWaveFunc(x1);
+	if (ymin <= fy && fy <= ymax) return true;
+	fy = getWaveFunc(x2);
+	if (ymin <= fy && fy <= ymax) return true;
+
+	if (waveIntersectHoriz(x1, x2, ymin)) return true;
+	if (waveIntersectHoriz(x1, x2, ymax)) return true;
+}
+
+bool rectIntersectFunc(double x1, double y1, double x2, double y2) {
+	if (adaptTestFunc == ADAPTCIRCLE) {
+		return rectIntersectFuncCircle(x1, y1, x2, y2);
+	} else if (adaptTestFunc == ADAPTWAVE) {
+		return rectIntersectFuncWave(x1, y1, x2, y2);
+	}
+	assert (false);
+}
+
+void testIntersect() {
+	assert (rectIntersectFuncCircle(0.0, 0.0, .25, .25) == false);
+	assert (rectIntersectFuncWave(0, .5, .25, .75));
+	//rectIntersectFuncWave(.5, 0, 1, .5);
+}
+
+void drawWaveSubdivide(double x1, double x2) {
+	double y1 = getWaveFunc(x1);
+	double y2 = getWaveFunc(x2);
+	double slope = (y2-y1)/(x2-x1);
+	if (x2-x1 < .01) {
+		glBegin(GL_LINES);
+		glVertex2f(-1+2*x1, -1+2*y1);
+		glVertex2f(-1+2*x2, -1+2*y2);
+		glEnd();
+	} else {
+		double median = (x1+x2)/2.0;
+		drawWaveSubdivide(x1, median);
+		drawWaveSubdivide(median, x2);
+	}
+}
+
+void drawAdaptFunction() {
+	glColor3f(0.0, 1.0, 0.0);
+	if (adaptTestFunc == ADAPTCIRCLE) {
+		// draw circle
+		double radius = adaptScale;
+		glBegin(GL_LINE_LOOP);
+		for (int i = 0; i < 360; i++) {
+			glVertex2f(radius * cos(i*M_PI/180), radius * sin(i*M_PI/180) +2*offsetY);
+		}
+		glEnd();
+	} else {
+		drawWaveSubdivide(0.0, 1.0);
+	}
+}
+
+
+
 /* Handler for window-repaint event. Call back when the window first appears and
    whenever the window needs to be re-painted. */
 void display() {
@@ -823,6 +950,10 @@ void display() {
 		drawMultilevel(root, levelToDisplay);
     } else {
 		drawParticles();
+	}
+
+	if (adaptTestFunc != ADAPTFUNCNONE) {
+		drawAdaptFunction();
 	}
 	
 	glFlush();  // Render now
@@ -993,12 +1124,10 @@ void relax(int d, int r) {
 
 double curlThresh = 0.1;
 double curlAdaptFunction(kdNode* node) {
+	assert (false);
+	// TODO figure out
 	double curl = node->getCurl();
-	if (adaptTestFunc == ADAPTFUNCNONE) {
-		//return fabs(curl) > curlThresh / (1<<node->level);
-		// TODO figure out
-	}
-	return fabs(curl) > curlThresh;
+	//return fabs(curl) > curlThresh / (1<<node->level);
 }
 
 double pressureThresh = .01;
@@ -1302,9 +1431,16 @@ double runVCycle() {
 	root->dp = 0;
 	// do not relax level 0 since it makes no sense to do so...
 
-	for (int d = 1; d <= totalLevels; d++) {
+	/*for (int d = 1; d <= totalLevels; d++) {
 		relax(d, (d==1) ? MAX_RELAX_COUNT : OPTIMIZED_RELAX_COUNT);
-	}
+	}*/
+	/*relax(1, MAX_RELAX_COUNT);
+	for (int d = 2; d <= totalLevels; d++) {
+		if (d%2 == 0 || d == totalLevels)
+			relax(d, OPTIMIZED_RELAX_COUNT);
+		else
+			recursiveInject(root, d);
+	}*/
 
 	//printf("correcting pressure\n");
 	// use corrections to improve pressure
@@ -1883,81 +2019,77 @@ void runErrorTest() {
 	printf("maximum error: %f, average error: %f\n", maxError, avgError);
 }
 
-void setAdaptTestValues(kdNode* node) {
-	// sets velocity for split dir
+void adaptTestRecursive(kdNode* node) {
 	node->p = 0.0;
-	int size_j = 1<<node->level_j;
-	int size_i = 1<<node->level_i;
-	double x = (node->j + 0.0)/size_j;
-	double y = (node->i + 0.0)/size_i;
-	if (adaptTestFunc == ADAPTXY) {
-		double x2 = x;
-		double y2 = y + 0.5/size_i;
-		node->vx = -.125*x2*y2*y2;
-		x2 = x + 1.0/size_j;
-		node->vx2 = -.125*x2*y2*y2;
-
-		x2 = x + 0.5/size_j;
-		y2 = y;
-		node->vy = .125*x2*x2*y2;
-		y2 = y + 1.0/size_i;
-		node->vy2 = .125*x2*x2*y2;
-	} else if (adaptTestFunc == ADAPTSIN) {
-		double x2 = x;
-		double y2 = y + 0.5/size_i;
-		node->vx = -.8/M_PI*cos(M_PI*x2)*sin(M_PI*y2);
-		x2 = x + 1.0/size_j;
-		node->vx2 = -.8/M_PI*cos(M_PI*x2)*sin(M_PI*y2);
-		
-		x2 = x + 0.5/size_j;
-		y2 = y;
-		node->vy = -1/M_PI*sin(M_PI*x2)*cos(M_PI*y2);
-		y2 = y + 1.0/size_i;
-		node->vy2 = -1/M_PI*sin(M_PI*x2)*cos(M_PI*y2);
-	} else if (adaptTestFunc == PARABOLA) {
-		double x2 = x;
-		double y2 = y + 0.5/size_i;
-		node->vx = .5*x2*y2 + .25*y2*y2;
-		x2 = x + 1.0/size_j;
-		node->vx2 = .5*x2*y2 + .25*y2*y2;
-
-		x2 = x + 0.5/size_j;
-		y2 = y;
-		node->vy = .25*y2 + .5*x2*x2*y2;
-		y2 = y + 1.0/size_i;
-		node->vy = .25*y2 + .5*x2*x2*y2;
+	if (node->level_i + node->level_j == totalLevels) {
+		return;
 	}
-	if (!node->leaf) {
+	if (node->leaf) {
+		int size_i = 1<<node->level_i;
+		int size_j = 1<<node->level_j;
+		double x1, y1, x2, y2;
+		x1 = ((float)node->j)/size_j;
+		y1 = ((float)node->i)/size_i;
+		x2 = x1 + 1.0/size_j;
+		y2 = y1 + 1.0/size_i;
+		if (rectIntersectFunc(x1, y1, x2, y2)) {
+			// determine direction of adaptation	
+
+			SplitDir dir;
+			if (node->level_i == levels || node->level_i - MAX_LEVEL_DIF == node->level_j) {
+				dir =  SPLIT_X;
+			} else if (node->level_j == levels || node->level_j - MAX_LEVEL_DIF == node->level_i) {
+				dir = SPLIT_Y;
+			} else {
+				// x
+				double midx = (x1+x2)/2.0;
+				bool bothX = rectIntersectFunc(x1, y1, midx, y2) && rectIntersectFunc(midx, y1, x2, y2);
+				double midy = (y1+y2)/2.0;
+				bool bothY = rectIntersectFunc(x1, y1, x2, midy) && rectIntersectFunc(x1, midy, x2, y2); 
+
+				if ((bothX && bothY) || (!bothX && !bothY)) {
+					// both will end up being split next time, choice doesn't matter
+					if (node->level_i > node->level_j) {
+						dir = SPLIT_Y;
+					} else {
+						dir = SPLIT_X;
+					}
+				} else if (bothX) {
+					dir = SPLIT_Y;
+				} else if (bothY) {
+					dir = SPLIT_X;
+				} else {
+					assert (false);
+				}
+				
+			}
+			node->expand(false, dir);
+			for (int k = 0; k < 2; k++) {
+				adaptTestRecursive(node->children[k]);
+			}
+		}
+	} else {
 		for (int k = 0; k < 2; k++) {
-			setAdaptTestValues(node->children[k]);
+			adaptTestRecursive(node->children[k]);
 		}
 	}
 }
 
 void runAdaptTest() {	
-	setAdaptTestValues(root);
-	setAdaptTestValues(oldRoot);
-	assert(adaptScheme == CURL);
-	std::swap(root, oldRoot);
-	advectAndCopy();
 	bool done = false;
 	int numCycles = -1;
-	while (!done) {
-		std::swap(root, oldRoot);
-		done = !recursiveAdaptAndCopy(root, oldRoot);
-		std::swap(root, oldRoot);
-		copy(root, oldRoot);
-		setAdaptTestValues(root);
-		setAdaptTestValues(oldRoot);
-		numCycles++;
-	}
-	printf("number of adapts done: %d\n", numCycles);
+
+	//root = new kdNode(NULL, 0, 0);
+
+	adaptTestRecursive(root);
 
 	resetProfiling();
 	root->profile();
 	printProfiling();	
 
 }
+
+
 
 void runProjectTest() {
 	if (adaptScheme != ADAPTNONE) {
@@ -2027,16 +2159,13 @@ void initSim() {
 
 	int startLevel = totalLevels - 2;
 	if (startState == POISSONTEST || startState == ERRORTEST || startState == PROJECTTEST) {
-		if (adaptScheme == ADAPTNONE)
+		if (adaptTestFunc == ADAPTFUNCNONE)
 			startLevel = totalLevels;
 		else
-			startLevel = totalLevels - 2;
+			startLevel = 2;
 	} else if (startState == ADAPTTEST) {
-		assert(totalLevels >= 6);
-		//startLevel = std::max(levels - 4, levels/2 + 1);
-		startLevel = totalLevels - 2;
+		startLevel = 2;
 	}
-
 
 	initRecursive(root, startLevel);
 
@@ -2044,7 +2173,7 @@ void initSim() {
 	
 	if (startState == POISSONTEST) {
 		// adapt
-		if (adaptScheme != ADAPTNONE) {
+		if (adaptTestFunc != ADAPTFUNCNONE) {
 			//expandRadius(root, .3);
 			//expandRadius(root, .2);
 			runAdaptTest();
@@ -2202,28 +2331,23 @@ int main(int argc, char** argv) {
 			}
 			if (!strcmp("none", adapt)) {
 				adaptTestFunc = ADAPTFUNCNONE;
-			} else if (!strcmp("xy", adapt)) {
-				adaptTestFunc = ADAPTXY;
-			} else if (!strcmp("sin", adapt)) {
-				adaptTestFunc = ADAPTSIN;
-			} else if (!strcmp("parabola", adapt)) {
-				adaptTestFunc = PARABOLA;
+			} else if (!strcmp("circle", adapt)) {
+				adaptTestFunc = ADAPTCIRCLE;
+			} else if (!strcmp("wave", adapt)) {
+				adaptTestFunc = ADAPTWAVE;
 			} else {
 				return 1;
 			}
 		} else if (!strcmp("adapttest", arg)) {
 			startState = ADAPTTEST;
 			char* func = argv[++i];
-			if (!strcmp("xy", func)) {
-				adaptTestFunc = ADAPTXY;
-			} else if (!strcmp("sin", func)) {
-				adaptTestFunc = ADAPTSIN;
-			} else if (!strcmp("parabola", func)) {
-				adaptTestFunc = PARABOLA;
+			if (!strcmp("circle", func)) {
+				adaptTestFunc = ADAPTCIRCLE;
+			} else if (!strcmp("wave", func)) {
+				adaptTestFunc = ADAPTWAVE;
 			} else {
 				return 1;
 			}
-			adaptScheme = CURL;
 		} else if (!strcmp("errortest", arg)) {
 			startState = ERRORTEST;
 			char* func = argv[++i];
@@ -2251,7 +2375,14 @@ int main(int argc, char** argv) {
 		} else if (!strcmp("-maxleveldif", arg)) {
 			MAX_LEVEL_DIF = atoi(argv[++i]);
 			assert (MAX_LEVEL_DIF > 0);
+		} else if (!strcmp("-adaptscale", arg)) {
+			adaptScale = atof(argv[++i]);
+		} else if (!strcmp("-wavePeriod",arg)) {
+			wavePeriod = atof(argv[++i]);
+		} else if (!strcmp("-offsetY", arg)) {
+			offsetY = atof(argv[++i]);
 		}
+
 	}
 	//levelToDisplay = levels/2;
     levelToDisplay = totalLevels;
