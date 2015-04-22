@@ -696,7 +696,7 @@ void drawParticles() {
 	glEnd();
 }
 
-double adaptScale = 0.5;
+double adaptScale = 0.6;
 double wavePeriod = 2;
 double offsetY = 0.0;
 
@@ -753,11 +753,41 @@ bool rectIntersectFuncCircle(double x1, double y1, double x2, double y2) {
 }
 
 double getWaveFunc(double x) {
-	return .5 + adaptScale*.5*cos(wavePeriod*2*M_PI*x);
+	return .5 + adaptScale*.5*cos(wavePeriod*2*M_PI*x) + offsetY;
+}
+
+bool waveIntersectHoriz(double x1, double x2, double y) {
+	// break into parts by period
+	int numParts = wavePeriod * 2;
+	double periodWidth = 1.0/numParts;
+	for (int i = 0; i < numParts; i++) {
+		double periodStartX = i*periodWidth;
+		double periodEndX = periodStartX + periodWidth;
+		if (periodEndX < x1 || periodStartX > x2) continue;
+		periodStartX = fmax(periodStartX, x1);
+		periodEndX = fmin(periodEndX, x2);
+	
+		double periodStartY = getWaveFunc(periodStartX);
+		double periodEndY = getWaveFunc(periodEndX);
+
+		double ymin = fmin(periodStartY, periodEndY);
+		double ymax = fmax(periodStartY, periodEndY);
+		if (ymin <= y && y <= ymax) return true;
+	}
+	return false;
 }
 
 bool rectIntersectFuncWave(double x1, double y1, double x2, double y2) {
-	return false;
+	double ymin = fmin(y1, y2);
+	double ymax = fmax(y1, y2);
+
+	double fy = getWaveFunc(x1);
+	if (ymin <= fy && fy <= ymax) return true;
+	fy = getWaveFunc(x2);
+	if (ymin <= fy && fy <= ymax) return true;
+
+	if (waveIntersectHoriz(x1, x2, ymin)) return true;
+	if (waveIntersectHoriz(x1, x2, ymax)) return true;
 }
 
 bool rectIntersectFunc(double x1, double y1, double x2, double y2) {
@@ -771,6 +801,8 @@ bool rectIntersectFunc(double x1, double y1, double x2, double y2) {
 
 void testIntersect() {
 	assert (rectIntersectFuncCircle(0.0, 0.0, .25, .25) == false);
+	assert (rectIntersectFuncWave(0, .5, .25, .75));
+	//rectIntersectFuncWave(.5, 0, 1, .5);
 }
 
 void drawWaveSubdivide(double x1, double x2) {
@@ -779,8 +811,8 @@ void drawWaveSubdivide(double x1, double x2) {
 	double slope = (y2-y1)/(x2-x1);
 	if (x2-x1 < .01) {
 		glBegin(GL_LINES);
-		glVertex2f(-1+2*x1, -1+2*y1 + 2*offsetY);
-		glVertex2f(-1+2*x2, -1+2*y2 + 2*offsetY);
+		glVertex2f(-1+2*x1, -1+2*y1);
+		glVertex2f(-1+2*x2, -1+2*y2);
 		glEnd();
 	} else {
 		double median = (x1+x2)/2.0;
@@ -2036,10 +2068,10 @@ void initSim() {
 
 	int startLevel = levels - 2;
 	if (startState == POISSONTEST || startState == ERRORTEST || startState == PROJECTTEST) {
-		if (adaptScheme == ADAPTNONE)
+		if (adaptTestFunc == ADAPTFUNCNONE)
 			startLevel = levels - 1;
 		else
-			startLevel = 0;
+			startLevel = 1;
 	} else if (startState == ADAPTTEST) {
 		//assert(levels > 3);
 		//startLevel = std::max(levels - 4, levels/2 + 1);
@@ -2054,7 +2086,7 @@ void initSim() {
 	
 	if (startState == POISSONTEST) {
 		// adapt
-		if (adaptScheme != ADAPTNONE) {
+		if (adaptTestFunc != ADAPTFUNCNONE) {
 			//expandRadius(root, .3);
 			//expandRadius(root, .2);
 			runAdaptTest();
