@@ -441,8 +441,8 @@ class qNode {
 			double minY = ((float)i)/size;
 			assert (!(x < minX || y < minY || x > minX + 1.0/size || y > minY + 1.0/size));
 
-			double di = (x*size)-i;
-			double dj = (y*size)-j;
+			double dj = (x*size)-j;
+			double di = (y*size)-i;
 			
 			std::pair<double, double> c00 = getNodalAt(r, 0, 0);
 			std::pair<double, double> c01 = getNodalAt(r, 0, 1);
@@ -647,11 +647,17 @@ void drawMultilevel(qNode* node, int ml) {
 				double mag = sqrt(vx*vx + vy*vy);
 				if (mag >= eps) {
 					glBegin(GL_LINES);
-					// max size is 1.0/side length, scaled by the max magnitude
-					glVertex2f(x + 1.0/size, y + 1.0/size);
-					double scale = maxMag * size;
-					glVertex2f(x + 1.0/size + vx / scale, y + 1.0/size + vy /scale);
+
+					// vx
+					glVertex2f(x, y + 1.0/size); 
+					glVertex2f(x + vx / scale, y + 1.0/size);
+
+					//vy
+					glVertex2f(x + 1.0/size, y);
+					glVertex2f(x + 1.0/size, y + vy / scale);
+
 					glEnd();
+
 				}
 			}
 		}
