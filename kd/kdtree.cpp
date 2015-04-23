@@ -116,7 +116,7 @@ Particle* particles;
 // start state stuff
 enum StartState { LEFT, SINK, SRCSINK, POISSONTEST, ADAPTTEST , ERRORTEST, PROJECTTEST };
 StartState startState;
-enum AdaptScheme { ADAPTNONE, CURL, PGRAD };
+enum AdaptScheme { ADAPTNONE, CURL, PGRAD, VNORM };
 AdaptScheme adaptScheme = ADAPTNONE;
 enum AdaptTestFunc { ADAPTFUNCNONE, ADAPTCIRCLE, ADAPTWAVE };
 AdaptTestFunc adaptTestFunc = ADAPTFUNCNONE;
@@ -1123,15 +1123,21 @@ void relax(int d, int r) {
 
 // returns true if leaf should be expanded, false if it should not
 
-double curlThresh = 0.1;
+
+double thresh = 0.1;
+
 double curlAdaptFunction(kdNode* node) {
-	assert (false);
-	// TODO figure out
 	double curl = node->getCurl();
-	//return fabs(curl) > curlThresh / (1<<node->level);
+	return fabs(curl) > thresh;
 }
 
-double pressureThresh = .01;
+double vnormAdaptFunction(kdNode* node) {
+	int size_i = 1<<node->level_i;
+	int size_j = 1<<node->level_j;
+	double vnorm = fabs(node->vx2-node->vx)/size_j + fabs(node->vy2-node->vy)/size_i;
+	return vnorm > thresh;
+}
+
 bool pGradAdaptFunction(kdNode* node) {
 	assert (false);
 	//std::pair<double, double> pgrad = node->getValueGradient(P);
@@ -1142,12 +1148,15 @@ bool adaptFunction(kdNode* node) {
 	assert(adaptScheme != ADAPTNONE);
 	if (adaptScheme == PGRAD) {
     	return pGradAdaptFunction(node);
-	} else { // CURL
+	} else if (adaptScheme == CURL) {
 		return curlAdaptFunction(node);
+	} else if (adaptScheme == VNORM) {
+		return vnormAdaptFunction(node);
 	}
+	assert (false);
 }
 
-SplitDir curlAdaptDirFunction(kdNode* node) {
+SplitDir velAdaptDirFunction(kdNode* node) {
 	// dimension with bigger velocity gradient
 	double dvdx = fabs(node->vx2 - node->vx)*(1<<node->level_j);
 	double dvdy = fabs(node->vy2 - node->vy)*(1<<node->level_i);
@@ -1172,8 +1181,8 @@ SplitDir adaptDirFunction(kdNode* node) {
 	}
 	if (adaptScheme == PGRAD) {
 		return pGradAdaptDirFunction(node);
-	} else {
-		return curlAdaptDirFunction(node);
+	} else if (adaptScheme == CURL || adaptScheme == VNORM) {
+		return velAdaptDirFunction(node);
 	}
 }
 
@@ -1765,33 +1774,63 @@ void initRecursive(kdNode* node, int d) {
 	}
 }
 
+double getPoissonVX(double x, double y){
+	if (poissonTestFunc == POISSONXY) {
+		double newy = 2*y-1;
+		return 6*x*(x-1) * (newy*newy*newy*newy - 2*newy*newy + 1);
+	} else if (poissonTestFunc == POISSONCOS) {
+		return M_PI*2*sin(2*M_PI*x)*(1-cos(M_PI*2*y));
+	} else if (poissonTestFunc == POISSONCOSKL) {
+		double k = 2;
+		double l = 2;
+		return -M_PI*k*sin(M_PI*k*x)*cos(M_PI*k*y);
+	}
+	assert (false);
+}
+
+double getPoissonVY(double x, double y){
+	if (poissonTestFunc == POISSONXY) {
+		return (2*x*x*x - 3*x*x+ 1) * 32*y*(2*y*y-3*y+1);
+	} else if (poissonTestFunc == POISSONCOS) {
+		return M_PI*2*sin(2*M_PI*y)*(1-cos(M_PI*2*x));
+	} else if (poissonTestFunc == POISSONCOSKL) {
+		double k = 2;
+		double l = 2;
+		return -M_PI*l*cos(M_PI*k*x)*sin(M_PI*k*y);
+	}
+	assert (false);
+}
+
 void poissonReset(kdNode* node) {
 	node->p = 0;
 	int size_i = 1<<node->level_i;
 	int size_j = 1<<node->level_j;
-	//node->p = 1.0/size/size/12;
-	if (node->leaf) {
-		// set pressure to integral over domain
-		double x = (node->j + 0.5)/size_j;
-		double y = (node->i + 0.5)/size_i;
-		if (poissonTestFunc == POISSONXY) {
-			node->p = .2667;
-			node->divV = 96 * (2*x-1) * (y-1)*(y-1) * y*y  +  32 * (x-1)*(x-1) * (2*x+1) * (1 - 6*y + 6*y*y);
-		} else if (poissonTestFunc == POISSONCOS) {
-			node->p = 1.0;
-			double cx = cos(M_PI*2*x);
-			double cy = cos(M_PI*2*y);
-			node->divV = 4*M_PI*M_PI * (cx + cy - 2*cx*cy);
-		} else if (poissonTestFunc == POISSONCOSKL) {
-			node->p = 0.0;
-			int k = 2;
-			int l = 2;
-			node->divV = -M_PI*M_PI*(k*k + l*l)*cos(M_PI*k*x)*cos(M_PI*l*y);
-		} else {
-			assert(false);
-		}
-	} else {
-		node->divV = 0;
+	double x = (node->j + 0.0)/size_j;
+	double y = (node->i + 0.0)/size_i;
+
+	// vel
+	double x2 = x;
+	double y2 = y + 0.5/size_i;
+	node->vx = getPoissonVX(x2, y2);
+	x2 = x + 1.0/size_j;
+	node->vx2 = getPoissonVX(x2, y2);
+
+	x2 = x + 0.5/size_j;
+	y2 = y;
+	node->vy = getPoissonVY(x2, y2);
+	y2 = y + 1.0/size_i;
+	node->vy2 = getPoissonVY(x2, y2);
+	
+	// set pressure to avg of function so it comes out with right constant
+	if (poissonTestFunc == POISSONXY)
+		node->p = .2667;
+	else if (poissonTestFunc == POISSONCOS)
+		node->p = 1.0;
+	else if (poissonTestFunc == POISSONCOSKL)
+		node->p = 0.0;
+	else
+		assert(false);
+	if (!node->leaf) {
 		for (int k = 0; k < 2; k++) {
 			poissonReset(node->children[k]);
 		}
@@ -2160,10 +2199,10 @@ void initSim() {
 
 	int startLevel = totalLevels - 2;
 	if (startState == POISSONTEST || startState == ERRORTEST || startState == PROJECTTEST) {
-		if (adaptTestFunc == ADAPTFUNCNONE)
+		if (adaptScheme == ADAPTNONE)
 			startLevel = totalLevels;
 		else
-			startLevel = 2;
+			startLevel = 6;
 	} else if (startState == ADAPTTEST) {
 		startLevel = 2;
 	}
@@ -2173,12 +2212,31 @@ void initSim() {
 	//computeNodalValues(root);
 	
 	if (startState == POISSONTEST) {
+		poissonReset(root);
 		// adapt
-		if (adaptTestFunc != ADAPTFUNCNONE) {
-			//expandRadius(root, .3);
-			//expandRadius(root, .2);
-			runAdaptTest();
+		if (adaptScheme != ADAPTNONE) {
+			bool done = false;
+
+			printf("doing poisson adapt first\n");
+			
+			int totalAdapts = 0;
+			while (!done) {
+				std::swap(root, oldRoot);
+				copy(root, oldRoot);
+				poissonReset(root);
+				std::swap(root, oldRoot);
+				done = !recursiveAdaptAndCopy(root, oldRoot);
+				poissonReset(root);
+				totalAdapts++;
+			}
+			printf("took %d adapts\n", totalAdapts);
+
+			resetProfiling();
+			root->profile();
+			printProfiling();
 		}
+
+		root->computeVelocityDivergence();
 
 		for (int i = 0; i < warmupRuns; i++) {
 			runPoissonTest(false);
@@ -2285,6 +2343,8 @@ int main(int argc, char** argv) {
 				adaptScheme = CURL;
 			} else if (!strcmp("pgrad", scheme)) {
 				adaptScheme = PGRAD;
+			} else if (!strcmp("vnorm", scheme)) {
+				adaptScheme = VNORM;
 			} else {
 				printf("invalid adapt scheme %s\n", scheme);
 				return 1;
@@ -2320,22 +2380,12 @@ int main(int argc, char** argv) {
 		} else if (!strcmp("poissontest", arg)) {
 			startState = POISSONTEST;
 			char* func = argv[++i];
-			char* adapt = argv[++i];
 			if (!strcmp("xy", func)) {
 				poissonTestFunc = POISSONXY;
 			} else if (!strcmp("cos", func)) {
 				poissonTestFunc = POISSONCOS;
 			} else if (!strcmp("coskl", func)) {
 				poissonTestFunc = POISSONCOSKL;
-			} else {
-				return 1;
-			}
-			if (!strcmp("none", adapt)) {
-				adaptTestFunc = ADAPTFUNCNONE;
-			} else if (!strcmp("circle", adapt)) {
-				adaptTestFunc = ADAPTCIRCLE;
-			} else if (!strcmp("wave", adapt)) {
-				adaptTestFunc = ADAPTWAVE;
 			} else {
 				return 1;
 			}
@@ -2382,6 +2432,8 @@ int main(int argc, char** argv) {
 			wavePeriod = atof(argv[++i]);
 		} else if (!strcmp("-offsetY", arg)) {
 			offsetY = atof(argv[++i]);
+		} else if (!strcmp("-thresh", arg)) {
+			thresh = atof(argv[++i]);
 		}
 
 	}

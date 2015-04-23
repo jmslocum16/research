@@ -2147,6 +2147,10 @@ void initSim() {
 				totalAdapts++;
 			}
 			printf("took %d adapts\n", totalAdapts);
+
+			resetProfiling();
+			root->profile();
+			printProfiling();
 		}
 		// TODO remove
 
