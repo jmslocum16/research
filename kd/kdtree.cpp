@@ -83,10 +83,11 @@ void resetProfiling() {
 void printProfiling() {
 	printf("number of leaves at each level: \n");
 	for (int i = 0; i <= totalLevels; i++) {
-		printf("%d: %d\n", i, leafLevels[i]);
+		//printf("%d: %d\n", i, leafLevels[i]);
 	}
 	printf("total number of nodes: %d\n", numNodes);
 	printf("total number of leaves: %d\n", numLeaves);
+	printf("total number of leaves at non-max level: %d\n", numLeaves - leafLevels[totalLevels]);
 }
 
 void startTime() {
@@ -1431,9 +1432,9 @@ double runVCycle() {
 	root->dp = 0;
 	// do not relax level 0 since it makes no sense to do so...
 
-	/*for (int d = 1; d <= totalLevels; d++) {
+	for (int d = 1; d <= totalLevels; d++) {
 		relax(d, (d==1) ? MAX_RELAX_COUNT : OPTIMIZED_RELAX_COUNT);
-	}*/
+	}
 	/*relax(1, MAX_RELAX_COUNT);
 	for (int d = 2; d <= totalLevels; d++) {
 		if (d%2 == 0 || d == totalLevels)
