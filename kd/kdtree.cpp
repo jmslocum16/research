@@ -339,7 +339,7 @@ class kdNode {
 			assert(false);
 		}
 
-		double getFaceGradient(int ml, int k, NodeValue v) {
+		/*double getFaceGradient(int ml, int k, NodeValue v) {
 			kdNode* n = this;
 			int oppositeK = (k < 2) ? 1-k : 3-(k%2);//1 - (k%2);
 			while (n != NULL && n->neighbors[k] == NULL) n = n->parent;
@@ -348,9 +348,23 @@ class kdNode {
 			} else {
 				return 0;
 			}
+		}*/
+		double getFaceGradient(int ml, int k, NodeValue v) {
+			kdNode* n = this;
+			int oppositeK = (k < 2) ? 1-k : 3-(k%2);//1 - (k%2);
+			while (n != NULL && n->neighbors[k] == NULL) n = n->parent;
+			if (n != NULL) {
+				int newi = i + deltas[k][0];
+				int newj = j + deltas[k][1];
+				n = n->neighbors[k]->get(level_i, level_j, newi, newj, true);
+				return n->addFaceToGradient(this, ml, oppositeK, v);
+			} else {
+				return 0;
+			}
+
 		}
 
-		double addFaceToGradient(kdNode* original, int ml, int k, NodeValue v) {
+		/*double addFaceToGradient(kdNode* original, int ml, int k, NodeValue v) {
 			if (leaf || (level_i+level_j) == ml) {
 				int horig = 1<< (k < 2 ? original->level_i : original->level_j);
 				int hn = 1<< (k < 2 ? level_i : level_j);
@@ -371,7 +385,27 @@ class kdNode {
 				}
 				return total;
 			}
+		}*/
+		double addFaceToGradient(kdNode* original, int ml, int k, NodeValue v) {
+			if (leaf || (level_i+level_j) == ml) {
+				int horig = 1<< (k < 2 ? original->level_i : original->level_j);
+				int hn = 1<< (k < 2 ? level_i : level_j);
+				double h = 0.5/horig + 0.5/hn;
+
+				return (getVal(v) - original->getVal(v))/h;
+			} else {
+				double total = 0.0;
+				if ((k < 2 && splitDir == SPLIT_X) || (k >= 2 && splitDir == SPLIT_Y)) {
+					total += children[0]->addFaceToGradient(original, ml, k, v);
+					total += children[1]->addFaceToGradient(original, ml, k, v);
+					total /= 2.0;
+				} else {
+					total += children[1-(k%2)]->addFaceToGradient(original, ml, k, v);
+				}
+				return total;
+			}
 		}
+
 
 		void getLaplacian(int ml, double *aSum, double* bSum, NodeValue v) {
 			for (int k = 0; k < 4; k++) {
@@ -379,6 +413,12 @@ class kdNode {
 				kdNode* n = this;
 				while (n != NULL && n->neighbors[k] == NULL) n = n->parent;
 				if (n != NULL) {
+					
+					int newi = i + deltas[k][0];
+					int newj = j + deltas[k][1];
+					//n = n->neighbors[k]->get(level_i, level_j, newi, newj, true);
+					//n->addFaceToLaplacian(this, ml, oppositeK, aSum, bSum, v);
+					
 					n->neighbors[k]->addFaceToLaplacian(this, ml, oppositeK, aSum, bSum, v);
 				} else {
 					*aSum -= 1;
@@ -1953,7 +1993,38 @@ void runPoissonTest(bool print) {
 	//printPressure();
 }
 
+// computes error in gradient discretization
+void checkPoissonErrorRecursive(kdNode* node, double* max, double* avg) {
+	if (node->leaf) {
+		int size_i = 1<<node->level_i;
+		int size_j = 1<<node->level_j;
+		for (int k = 0; k < 4; k++) {
+			double vel;
+			if (k == 0) vel = node->vy2;
+			else if (k == 1) vel = -node->vy;
+			else if (k == 2) vel = node->vx2;
+			else vel = -node->vx;
+			double grad = node->getFaceGradient(totalLevels, k, P);
+			double error = fabs(grad - vel);
+			//printf("d: %d, velocity: %f, pressure gradient :%f, error: %f\n", k, vel, grad, error);
+			*max = fmax(*max, error);
+			*avg += error/ size_i/size_j/4;
+		}
+	} else {
+		for (int k = 0; k < 2; k++) {
+			checkPoissonErrorRecursive(node->children[k], max, avg);
+		}
+	}
+}
 
+void checkPoissonError() {
+	// TODO pass values to sum
+	double max = 0.0;
+	double avg = 0.0;
+	checkPoissonErrorRecursive(root, &max, &avg);	
+
+	printf("gradient error. max: %f, avg: %f\n", max, avg);
+}
 
 void setErrorPressure(kdNode* node) {
 	int size_i = 1<<node->level_i;
@@ -2010,8 +2081,14 @@ double calculateError(kdNode* node, double* avgError) {
 		double max = 0.0;
 		for (int k = 0; k < 4; k++) {
 			// calculate gradient in direction k
-			int ml = levels - 1;
+
+			// 4/4: (4, 7) in dir 3
+			if (node->level_i == 4 && node->level_j == 4 && node->i ==4 && node->j == 7 && k == 3) {
+				printf("asdfasdfsafa\n");
+			}
+			int ml = totalLevels;
 			double calc = node->getFaceGradient(ml, k, P);
+			ml = node->level_i + node->level_j;
 			
 			double x = (node->j + 0.5 + 0.5*deltas[k][1])/size_j;
 			double y = (node->i + 0.5 + 0.5*deltas[k][0])/size_i;
@@ -2030,7 +2107,7 @@ double calculateError(kdNode* node, double* avgError) {
 				printf(" down %d levels.", ml - node->level_i - node->level_j);
 			}
 			printf("real: %f, calc: %f, error: %f\n", real, calc, error);
-			*avgError += error/size_i/size_j;
+			*avgError += error/size_i/size_j/4;
 			max = fmax(max, error);
 		}
 		return max;
@@ -2246,6 +2323,7 @@ void initSim() {
 		for (int i = 0; i < numToRun; i++) {
 			runPoissonTest(true);
 		}
+		checkPoissonError();
 		numToRun = 0;
 		return;
 	} else if (startState == ADAPTTEST) {
@@ -2434,8 +2512,9 @@ int main(int argc, char** argv) {
 			offsetY = atof(argv[++i]);
 		} else if (!strcmp("-thresh", arg)) {
 			thresh = atof(argv[++i]);
+		} else if (!strcmp("-eps", arg)) {
+			eps = atof(argv[++i]);
 		}
-
 	}
 	//levelToDisplay = levels/2;
     levelToDisplay = totalLevels;

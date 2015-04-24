@@ -1899,6 +1899,39 @@ void runPoissonTest(bool print) {
 	//printPressure();
 }
 
+// computes error in gradient discretization
+void checkPoissonErrorRecursive(qNode* node, double* max, double* avg) {
+	if (node->leaf) {
+		int size = 1<<node->level;
+		for (int k = 0; k < 4; k++) {
+			double vel;
+			if (k == 0) vel = node->vy2;
+			else if (k == 1) vel = -node->vy;
+			else if (k == 2) vel = node->vx2;
+			else vel = -node->vx;
+			double grad = node->getFaceGradient(levels - 1, k, P);
+			double error = fabs(grad - vel);
+			//printf("d: %d, velocity: %f, pressure gradient :%f, error: %f\n", k, vel, grad, error);
+			*max = fmax(*max, error);
+			*avg += error/size/size/4;
+		}
+	} else {
+		for (int k = 0; k < 4; k++) {
+			checkPoissonErrorRecursive(node->children[k], max, avg);
+		}
+	}
+}
+
+void checkPoissonError() {
+	// TODO pass values to sum
+	double max = 0.0;
+	double avg = 0.0;
+	checkPoissonErrorRecursive(root, &max, &avg);	
+
+	printf("gradient error. max: %f, avg: %f\n", max, avg);
+}
+
+
 
 
 void setErrorPressure(qNode* node) {
@@ -2165,6 +2198,7 @@ void initSim() {
 			runPoissonTest(true);
 		}
 		numToRun = 0;
+		checkPoissonError();
 		return;
 	} else if (startState == ADAPTTEST) {
 		runAdaptTest();
