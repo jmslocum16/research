@@ -349,9 +349,63 @@ class kdNode {
 				return 0;
 			}
 		}*/
-		double getFaceGradient(int ml, int k, NodeValue v) {
+
+		kdNode* getChildInDir(int targetCoord, int targetLevel, int k) {
+			if (k < 2) {
+				// in y, going off x level + coord
+				if (level_j == targetLevel) {
+					assert (targetCoord ==  j);
+					return this;
+				}
+				assert (level_j < targetLevel);
+				if (leaf) {
+					return this;
+				} else if (splitDir == SPLIT_X) {
+					// choose correct one
+					int leveldif = targetLevel - level_j;
+					int midcoord = (1<<leveldif)*j + 1<<(leveldif - 1);
+					int index = (targetCoord < midcoord) ? 0 : 1;
+					return children[index]->getChildInDir(targetCoord, targetLevel, k);
+				} else {
+					return children[1-(k%2)]->getChildInDir(targetCoord, targetLevel, k);
+				}
+			} else {
+				// in x, going off y level + coord
+				if (level_i == targetLevel) {
+					assert (targetCoord ==  i);
+					return this;
+				}
+				assert (level_i < targetLevel);
+				if (leaf) {
+					return this;
+				} else if (splitDir == SPLIT_Y) {
+					// choose correct one
+					int leveldif = targetLevel - level_i;
+					int midcoord = (1<<leveldif)*i + 1<<(leveldif - 1);
+					int index = (targetCoord < midcoord) ? 0 : 1;
+					return children[index]->getChildInDir(targetCoord, targetLevel, k);
+				} else {
+					return children[1-(k%2)]->getChildInDir(targetCoord, targetLevel, k);
+				}
+
+			}
+		}
+
+		kdNode* getNeighborInDir(int targetCoord, int targetLevel, int k) {
 			kdNode* n = this;
 			int oppositeK = (k < 2) ? 1-k : 3-(k%2);//1 - (k%2);
+			while (n != NULL && n->neighbors[k] == NULL) n = n->parent;
+			if (n != NULL) {
+				int newi = i + deltas[k][0];
+				int newj = j + deltas[k][1];
+				n = n->neighbors[k]->getChildInDir(targetCoord, targetLevel, oppositeK);
+			}
+			return n;
+		}
+
+		double getFaceGradient(int ml, int k, NodeValue v) {
+			int oppositeK = (k < 2) ? 1-k : 3-(k%2);//1 - (k%2);
+			/*kdNode* n = this;
 			while (n != NULL && n->neighbors[k] == NULL) n = n->parent;
 			if (n != NULL) {
 				int newi = i + deltas[k][0];
@@ -360,6 +414,14 @@ class kdNode {
 				return n->addFaceToGradient(this, ml, oppositeK, v);
 			} else {
 				return 0;
+			}*/
+			int targetLevel = (k < 2 ? level_j : level_i);
+			int targetCoord = (k < 2 ? j : i);
+			kdNode* n = getNeighborInDir(targetCoord, targetLevel, k);
+			if (n == NULL) {
+				return 0;
+			} else {
+				return n->addFaceToGradient(this, ml, oppositeK, v);
 			}
 
 		}
@@ -392,6 +454,8 @@ class kdNode {
 				int hn = 1<< (k < 2 ? level_i : level_j);
 				double h = 0.5/horig + 0.5/hn;
 
+				//printf("Adding node with pressure %f to face gradient of node with pressure %f\n", getVal(v), original->getVal(v));
+
 				return (getVal(v) - original->getVal(v))/h;
 			} else {
 				double total = 0.0;
@@ -406,20 +470,25 @@ class kdNode {
 			}
 		}
 
-
 		void getLaplacian(int ml, double *aSum, double* bSum, NodeValue v) {
 			for (int k = 0; k < 4; k++) {
 				int oppositeK = (k < 2) ? 1-k : 3-(k%2); //1 - (k%2);
-				kdNode* n = this;
+				/*kdNode* n = this;
 				while (n != NULL && n->neighbors[k] == NULL) n = n->parent;
+				*/
+				int targetLevel = (k < 2 ? level_j : level_i);
+				int targetCoord = (k < 2 ? j : i);
+				kdNode* n = getNeighborInDir(targetCoord, targetLevel, k);
+			
 				if (n != NULL) {
 					
 					int newi = i + deltas[k][0];
 					int newj = j + deltas[k][1];
 					//n = n->neighbors[k]->get(level_i, level_j, newi, newj, true);
-					//n->addFaceToLaplacian(this, ml, oppositeK, aSum, bSum, v);
 					
-					n->neighbors[k]->addFaceToLaplacian(this, ml, oppositeK, aSum, bSum, v);
+					//n->neighbors[k]->addFaceToLaplacian(this, ml, oppositeK, aSum, bSum, v);
+
+					n->addFaceToLaplacian(this, ml, oppositeK, aSum, bSum, v);
 				} else {
 					*aSum -= 1;
 					*bSum += getVal(v);
@@ -441,6 +510,7 @@ class kdNode {
 				double d = dside/h;
 				*aSum -= d;
 				*bSum += d*getVal(v);
+				//printf("adding node with pressure %f to laplacian of node with pressure %f\n", getVal(v), original->getVal(v));
 			} else {
 				if ((k < 2 && splitDir == SPLIT_X) || (k >= 2 && splitDir == SPLIT_Y)) {
 					children[0]->addFaceToLaplacian(original, ml, k, aSum, bSum, v);
@@ -1034,6 +1104,111 @@ void testAdvect() {
 	levels = oldLevels;
 	totalLevels = oldTotalLevels;
 	dt = oldDt;
+}
+
+void assertf (int id, double a, double b) {
+	//printf("test for id: %d\n", id);
+	if (fabs(a-b) > .00001) {
+		printf("id %d incorrect!, a: %f, b: %f\n", id, a, b);
+		assert (false);
+	}
+}
+
+void testGradLap() {
+	kdNode* testRoot = new kdNode(NULL, 0, 0, 0, 0);
+	testRoot->expand(false, SPLIT_X);
+	testRoot->children[0]->expand(false, SPLIT_X);
+	testRoot->children[1]->expand(false, SPLIT_Y);
+	testRoot->children[1]->children[0]->expand(false, SPLIT_Y);
+	testRoot->children[1]->children[1]->expand(false, SPLIT_X);
+
+	testRoot->children[0]->children[0]->p = 1.0;
+	testRoot->children[0]->children[1]->p = 2.0;
+	testRoot->children[1]->children[0]->children[0]->p = 3.0;
+	testRoot->children[1]->children[0]->children[1]->p = 4.0;
+	testRoot->children[1]->children[1]->children[0]->p = 5.0;
+	testRoot->children[1]->children[1]->children[1]->p = 6.0;
+
+	// gradient tests
+	assertf (0, testRoot->children[0]->children[0]->getFaceGradient(3, 0, P), 0.0);
+	assertf (1, testRoot->children[0]->children[0]->getFaceGradient(3, 1, P), 0.0);
+	assertf (2, testRoot->children[0]->children[0]->getFaceGradient(3, 2, P), 4.0);
+	assertf (3, testRoot->children[0]->children[0]->getFaceGradient(3, 3, P), 0.0);
+
+	assertf (4, testRoot->children[0]->children[1]->getFaceGradient(3, 0, P), 0.0);
+	assertf (5, testRoot->children[0]->children[1]->getFaceGradient(3, 1, P), 0.0);
+	assertf (6, testRoot->children[0]->children[1]->getFaceGradient(3, 2, P), 8.0);//?
+	assertf (7, testRoot->children[0]->children[1]->getFaceGradient(3, 3, P), -4.0);
+
+	assertf (8, testRoot->children[1]->children[0]->children[0]->getFaceGradient(3, 0, P), 4.0);
+	assertf (9, testRoot->children[1]->children[0]->children[0]->getFaceGradient(3, 1, P), 0.0);
+	assertf (10, testRoot->children[1]->children[0]->children[0]->getFaceGradient(3, 2, P), 0.0);//?
+	assertf (11, testRoot->children[1]->children[0]->children[0]->getFaceGradient(3, 3, P), -8.0/3.0);
+
+	assertf (12, testRoot->children[1]->children[0]->children[1]->getFaceGradient(3, 0, P), 4.0);
+	assertf (13, testRoot->children[1]->children[0]->children[1]->getFaceGradient(3, 1, P), -4.0);
+	assertf (14, testRoot->children[1]->children[0]->children[1]->getFaceGradient(3, 2, P), 0.0);
+	assertf (15, testRoot->children[1]->children[0]->children[1]->getFaceGradient(3, 3, P), -16.0/3.0);
+
+	assertf (16, testRoot->children[1]->children[1]->children[0]->getFaceGradient(3, 0, P), 0.0);
+	assertf (17, testRoot->children[1]->children[1]->children[0]->getFaceGradient(3, 1, P), -8.0/3.0);
+	assertf (18, testRoot->children[1]->children[1]->children[0]->getFaceGradient(3, 2, P), 4.0);
+	assertf (19, testRoot->children[1]->children[1]->children[0]->getFaceGradient(3, 3, P), -12.0);
+
+	assertf (20, testRoot->children[1]->children[1]->children[1]->getFaceGradient(3, 0, P), 0.0);
+	assertf (21, testRoot->children[1]->children[1]->children[1]->getFaceGradient(3, 1, P), -16.0/3.0);
+	assertf (22, testRoot->children[1]->children[1]->children[1]->getFaceGradient(3, 2, P), 0.0);
+	assertf (23, testRoot->children[1]->children[1]->children[1]->getFaceGradient(3, 3, P), -4.0);
+
+	// laplacian tests
+
+	double aSum, bSum, laplacian;
+	kdNode* n;
+
+	aSum = 0.0;
+	bSum = 0.0;
+	n = testRoot->children[0]->children[0];
+	n->getLaplacian(3, &aSum, &bSum, P);
+	laplacian = (aSum * n->p + bSum) * (1<<n->level_i) * (1<<n->level_j);
+	assertf (24, laplacian, 16);
+
+	aSum = 0.0;
+	bSum = 0.0;
+	n = testRoot->children[0]->children[1];
+	n->getLaplacian(3, &aSum, &bSum, P);
+	laplacian = (aSum * n->p + bSum) * (1<<n->level_i) * (1<<n->level_j);
+	assertf (25, laplacian, 16);
+
+	aSum = 0.0;
+	bSum = 0.0;
+	n = testRoot->children[1]->children[0]->children[0];
+	n->getLaplacian(3, &aSum, &bSum, P);
+	laplacian = (aSum * n->p + bSum) *  (1<<n->level_i) * (1<<n->level_j);
+	assertf (26, laplacian, 32.0/3.0);
+
+	aSum = 0.0;
+	bSum = 0.0;
+	n = testRoot->children[1]->children[0]->children[1];
+	n->getLaplacian(3, &aSum, &bSum, P);
+	laplacian = (aSum * n->p + bSum) *  (1<<n->level_i) * (1<<n->level_j);
+	assertf (27, laplacian, -32.0/3.0);
+
+	aSum = 0.0;
+	bSum = 0.0;
+	n = testRoot->children[1]->children[1]->children[0];
+	n->getLaplacian(3, &aSum, &bSum, P);
+	laplacian = (aSum * n->p + bSum) *  (1<<n->level_i) * (1<<n->level_j);
+	assertf (28, laplacian, -14.0*8.0/3.0);
+
+	aSum = 0.0;
+	bSum = 0.0;
+	n = testRoot->children[1]->children[1]->children[1];
+	n->getLaplacian(3, &aSum, &bSum, P);
+	laplacian = (aSum * n->p + bSum) *  (1<<n->level_i) * (1<<n->level_j);
+	assertf (29, laplacian, -80.0/3.0);
+
+	// cleanup
+	delete testRoot;
 }
 
 // poisson solver functions
@@ -1994,7 +2169,7 @@ void runPoissonTest(bool print) {
 }
 
 // computes error in gradient discretization
-void checkPoissonErrorRecursive(kdNode* node, double* max, double* avg) {
+void checkPoissonErrorRecursive(kdNode* node, double* maxG, double* avgG, double* maxL, double* avgL) {
 	if (node->leaf) {
 		int size_i = 1<<node->level_i;
 		int size_j = 1<<node->level_j;
@@ -2007,23 +2182,41 @@ void checkPoissonErrorRecursive(kdNode* node, double* max, double* avg) {
 			double grad = node->getFaceGradient(totalLevels, k, P);
 			double error = fabs(grad - vel);
 			//printf("d: %d, velocity: %f, pressure gradient :%f, error: %f\n", k, vel, grad, error);
-			*max = fmax(*max, error);
-			*avg += error/ size_i/size_j/4;
+			*maxG = fmax(*maxG, error);
+			*avgG += error/ size_i/size_j/4;
 		}
+		double aSum = 0.0;
+		double bSum = 0.0;
+		node->getLaplacian(totalLevels, &aSum, &bSum, P);
+		double laplacian = (aSum * node->p + bSum) * size_i * size_j;
+		double lap2 = 0.0;
+		for (int k = 0; k < 4; k++)
+
+	// gradient tests
+			lap2 += (k < 2 ? size_j : size_i) * node->getFaceGradient(totalLevels, k, P);
+		double error = fabs(laplacian - node->divV);
+		if (fabs(laplacian - lap2) > .0001)
+			printf("divv: %f, lap: %f, lap2: %f, error: %f\n", node->divV, laplacian, lap2, error);
+		*maxL = fmax(*maxL, error);
+		*avgL += error / size_i/size_j;
+		
 	} else {
 		for (int k = 0; k < 2; k++) {
-			checkPoissonErrorRecursive(node->children[k], max, avg);
+			checkPoissonErrorRecursive(node->children[k], maxG, avgG, maxL, avgL);
 		}
 	}
 }
 
 void checkPoissonError() {
 	// TODO pass values to sum
-	double max = 0.0;
-	double avg = 0.0;
-	checkPoissonErrorRecursive(root, &max, &avg);	
+	double maxG = 0.0;
+	double avgG = 0.0;
+	double maxL = 0.0;
+	double avgL = 0.0;
+	checkPoissonErrorRecursive(root, &maxG, &avgG, &maxL, &avgL);	
 
-	printf("gradient error. max: %f, avg: %f\n", max, avg);
+	printf("gradient error. max: %f, avg: %f\n", maxG, avgG);
+	printf("laplacian error. max: %f, avg: %f\n", maxL, avgL);
 }
 
 void setErrorPressure(kdNode* node) {
@@ -2523,6 +2716,7 @@ int main(int argc, char** argv) {
 	// run tests
 	//testNeighbors();
 	//testMultilevelNeighbors();
+	testGradLap();
 
 	initSim();
 	
