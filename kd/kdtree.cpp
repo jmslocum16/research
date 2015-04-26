@@ -65,6 +65,7 @@ bool screenshot;
 int numToRun = 0;
 int warmupRuns = 0;
 int MAX_LEVEL_DIF = 2;
+bool pressureInterp = false;
 
 // profiling
 int numLeaves, numNodes;
@@ -350,6 +351,25 @@ class kdNode {
 			}
 		}*/
 
+		double getValueInterpCorrection(kdNode* original, int ml, int k, NodeValue v) {
+			int newk;
+			double dpos;
+			if (k < 2) {
+				// previously computing gradient in y direction, need x direction for interpolation
+				double origX = (original->j + 0.5)/(1<<original->level_j);
+				double x = (j + 0.5)/(1<<level_j);
+				dpos = origX - x;
+				newk = dpos > 0 ? 2 : 3;
+			} else {
+				double origY = (original->i + 0.5)/(1<<original->level_i); 
+				double y = (i + 0.5)/(1<<level_i);
+				dpos = origY - y;
+				newk = dpos > 0 ? 0 : 1;
+			}
+			double faceGrad = getFaceGradient(ml, newk, v);
+			return fabs(dpos) * faceGrad;
+		}
+
 		kdNode* getChildInDir(int targetCoord, int targetLevel, int k) {
 			if (k < 2) {
 				// in y, going off x level + coord
@@ -456,7 +476,14 @@ class kdNode {
 
 				//printf("Adding node with pressure %f to face gradient of node with pressure %f\n", getVal(v), original->getVal(v));
 
-				return (getVal(v) - original->getVal(v))/h;
+				int origLevel = (k < 2 ? original->level_j : original->level_i);
+				int thisLevel = (k < 2 ? level_j : level_i);
+				double val = getVal(v);
+				if (pressureInterp && origLevel > thisLevel) {
+					val += getValueInterpCorrection(original, ml, k, v);
+				}
+
+				return (val - original->getVal(v))/h;
 			} else {
 				double total = 0.0;
 				if ((k < 2 && splitDir == SPLIT_X) || (k >= 2 && splitDir == SPLIT_Y)) {
@@ -508,8 +535,17 @@ class kdNode {
 				double dside = fmin(1.0/worig, 1.0/wn);
 
 				double d = dside/h;
+
+				int origLevel = (k < 2 ? original->level_j : original->level_i);
+				int thisLevel = (k < 2 ? level_j : level_i);
+				double val = getVal(v);
+				if (pressureInterp && origLevel > thisLevel) {
+					val += getValueInterpCorrection(original, ml, k, v);
+				}
+
+
 				*aSum -= d;
-				*bSum += d*getVal(v);
+				*bSum += d*val;
 				//printf("adding node with pressure %f to laplacian of node with pressure %f\n", getVal(v), original->getVal(v));
 			} else {
 				if ((k < 2 && splitDir == SPLIT_X) || (k >= 2 && splitDir == SPLIT_Y)) {
@@ -1113,6 +1149,66 @@ void assertf (int id, double a, double b) {
 		assert (false);
 	}
 }
+
+void testPressureInterp() {
+	int oldLevels = levels;	
+	int oldTotalLevels = totalLevels;
+	bool oldPressureInterp = pressureInterp;
+	levels = 2;
+	totalLevels = 4;
+	pressureInterp = true;
+
+	kdNode* testRoot = new kdNode(NULL, 0, 0, 0, 0);
+	testRoot->expand(false, SPLIT_X);
+	testRoot->children[0]->expand(false, SPLIT_Y);
+	testRoot->children[1]->expand(false, SPLIT_Y);
+	testRoot->children[0]->children[0]->expand(false, SPLIT_Y);
+	testRoot->children[1]->children[0]->expand(false, SPLIT_X);
+
+	testRoot->children[0]->children[1]->p = 5;
+	testRoot->children[1]->children[1]->p = 6;
+	testRoot->children[0]->children[0]->children[0]->p = 1;
+	testRoot->children[0]->children[0]->children[1]->p = 2;
+	testRoot->children[1]->children[0]->children[0]->p = 3;
+	testRoot->children[1]->children[0]->children[1]->p = 4;
+
+	assertf(0, testRoot->children[0]->children[1]->getFaceGradient(3, 0, P), 0.0);
+	assertf(1, testRoot->children[0]->children[1]->getFaceGradient(3, 1, P), -8.0);
+	assertf(2, testRoot->children[0]->children[1]->getFaceGradient(3, 2, P), 2.0);
+	assertf(3, testRoot->children[0]->children[1]->getFaceGradient(3, 3, P), 0.0);
+	
+	assertf(4, testRoot->children[1]->children[1]->getFaceGradient(3, 0, P), 0.0);
+	assertf(5, testRoot->children[1]->children[1]->getFaceGradient(3, 1, P), -5.0);
+	assertf(6, testRoot->children[1]->children[1]->getFaceGradient(3, 2, P), 0.0);
+	assertf(7, testRoot->children[1]->children[1]->getFaceGradient(3, 3, P), -2.0);
+	
+	assertf(8, testRoot->children[0]->children[0]->children[0]->getFaceGradient(3, 0, P), 4.0);
+	assertf(9, testRoot->children[0]->children[0]->children[0]->getFaceGradient(3, 1, P), 0.0);
+	assertf(10, testRoot->children[0]->children[0]->children[0]->getFaceGradient(3, 2, P), 16.0/3.0);
+	assertf(11, testRoot->children[0]->children[0]->children[0]->getFaceGradient(3, 3, P), 0.0);
+		
+	assertf(12, testRoot->children[0]->children[0]->children[1]->getFaceGradient(3, 0, P), 8.0);
+	assertf(13, testRoot->children[0]->children[0]->children[1]->getFaceGradient(3, 1, P), -4.0);
+	assertf(14, testRoot->children[0]->children[0]->children[1]->getFaceGradient(3, 2, P), 9.0/2.0);
+	assertf(15, testRoot->children[0]->children[0]->children[1]->getFaceGradient(3, 3, P), 0.0);
+	
+	assertf(16, testRoot->children[1]->children[0]->children[0]->getFaceGradient(3, 0, P), 11.0/2.0);
+	assertf(17, testRoot->children[1]->children[0]->children[0]->getFaceGradient(3, 1, P), 0.0);
+	assertf(18, testRoot->children[1]->children[0]->children[0]->getFaceGradient(3, 2, P), 4.0);
+	assertf(19, testRoot->children[1]->children[0]->children[0]->getFaceGradient(3, 3, P), -4.0);
+		
+	assertf(20, testRoot->children[1]->children[0]->children[1]->getFaceGradient(3, 0, P), 4.0);
+	assertf(21, testRoot->children[1]->children[0]->children[1]->getFaceGradient(3, 1, P), 0.0);
+	assertf(22, testRoot->children[1]->children[0]->children[1]->getFaceGradient(3, 2, P), 0.0);
+	assertf(23, testRoot->children[1]->children[0]->children[1]->getFaceGradient(3, 3, P), -4.0);
+	
+	levels = oldLevels;
+	totalLevels = oldTotalLevels;
+	pressureInterp = oldPressureInterp;
+	delete testRoot;
+}
+
+
 
 void testGradLap() {
 	kdNode* testRoot = new kdNode(NULL, 0, 0, 0, 0);
@@ -2719,6 +2815,8 @@ int main(int argc, char** argv) {
 			poissonk = atoi(argv[++i]);
 		} else if (!strcmp("-l", arg)) {
 			poissonl = atoi(argv[++i]);
+		} else if (!strcmp("--pressureinterp", arg)) {
+			pressureInterp = true;
 		}
 	}
 	//levelToDisplay = levels/2;
@@ -2728,7 +2826,8 @@ int main(int argc, char** argv) {
 	// run tests
 	//testNeighbors();
 	//testMultilevelNeighbors();
-	testGradLap();
+	//testGradLap();
+	testPressureInterp();
 
 	initSim();
 	
