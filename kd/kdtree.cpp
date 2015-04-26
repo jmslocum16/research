@@ -83,7 +83,7 @@ void resetProfiling() {
 void printProfiling() {
 	printf("number of leaves at each level: \n");
 	for (int i = 0; i <= totalLevels; i++) {
-		//printf("%d: %d\n", i, leafLevels[i]);
+		printf("%d: %d\n", i, leafLevels[i]);
 	}
 	printf("total number of nodes: %d\n", numNodes);
 	printf("total number of leaves: %d\n", numLeaves);
@@ -363,7 +363,7 @@ class kdNode {
 				} else if (splitDir == SPLIT_X) {
 					// choose correct one
 					int leveldif = targetLevel - level_j;
-					int midcoord = (1<<leveldif)*j + 1<<(leveldif - 1);
+					int midcoord = (1<<leveldif)*j + (1<<(leveldif - 1));
 					int index = (targetCoord < midcoord) ? 0 : 1;
 					return children[index]->getChildInDir(targetCoord, targetLevel, k);
 				} else {
@@ -381,7 +381,7 @@ class kdNode {
 				} else if (splitDir == SPLIT_Y) {
 					// choose correct one
 					int leveldif = targetLevel - level_i;
-					int midcoord = (1<<leveldif)*i + 1<<(leveldif - 1);
+					int midcoord = (1<<leveldif)*i + (1<<(leveldif - 1));
 					int index = (targetCoord < midcoord) ? 0 : 1;
 					return children[index]->getChildInDir(targetCoord, targetLevel, k);
 				} else {
@@ -1989,6 +1989,9 @@ void initRecursive(kdNode* node, int d) {
 	}
 }
 
+int poissonk = 3;
+int poissonl = 3;
+
 double getPoissonVX(double x, double y){
 	if (poissonTestFunc == POISSONXY) {
 		double newy = 2*y-1;
@@ -1996,9 +1999,7 @@ double getPoissonVX(double x, double y){
 	} else if (poissonTestFunc == POISSONCOS) {
 		return M_PI*2*sin(2*M_PI*x)*(1-cos(M_PI*2*y));
 	} else if (poissonTestFunc == POISSONCOSKL) {
-		double k = 2;
-		double l = 2;
-		return -M_PI*k*sin(M_PI*k*x)*cos(M_PI*k*y);
+		return -M_PI*poissonk*sin(M_PI*poissonk*x)*cos(M_PI*poissonl*y);
 	}
 	assert (false);
 }
@@ -2009,9 +2010,7 @@ double getPoissonVY(double x, double y){
 	} else if (poissonTestFunc == POISSONCOS) {
 		return M_PI*2*sin(2*M_PI*y)*(1-cos(M_PI*2*x));
 	} else if (poissonTestFunc == POISSONCOSKL) {
-		double k = 2;
-		double l = 2;
-		return -M_PI*l*cos(M_PI*k*x)*sin(M_PI*k*y);
+		return -M_PI*poissonl*cos(M_PI*poissonk*x)*sin(M_PI*poissonl*y);
 	}
 	assert (false);
 }
@@ -2065,9 +2064,7 @@ void computePoissonError(kdNode* node, double* total) {
 		} else if (poissonTestFunc == POISSONCOS) {
 			correct = (1-cos(M_PI * 2 * x)) * (1-cos(M_PI * 2 * y));
 		} else if (poissonTestFunc == POISSONCOSKL) {
-			int k = 2;
-			int l = 2;
-			correct = cos(M_PI * k * x) * cos(M_PI * l * y);
+			correct = cos(M_PI * poissonk * x) * cos(M_PI * poissonl * y);
 		} else {
 			assert(false);
 		}
@@ -2114,7 +2111,7 @@ void expandRadius(kdNode* node, double radius) {
 	}
 }
 
-void runPoissonTest(bool print) {
+double runPoissonTest(bool print) {
 	// set all pressure to 0 again
 	assert(poissonTestFunc != POISSONFUNCNONE);
 	poissonReset(root);
@@ -2159,12 +2156,13 @@ void runPoissonTest(bool print) {
 		//doneVCycle |= fabs(newR-oldR) < eps/100;
 		doneVCycle = getMaxR(root) < eps;
 	}
+	double time = 0.0;
 	if (print) {
-		endTime("poisson test");	
+		time = endTime("poisson test");	
 		printf("poisson test took %d vcycles\n", i);
 		printf("average error: %f\n", avgError);
 	}
-
+	return time;
 	//printPressure();
 }
 
@@ -2190,13 +2188,7 @@ void checkPoissonErrorRecursive(kdNode* node, double* maxG, double* avgG, double
 		node->getLaplacian(totalLevels, &aSum, &bSum, P);
 		double laplacian = (aSum * node->p + bSum) * size_i * size_j;
 		double lap2 = 0.0;
-		for (int k = 0; k < 4; k++)
-
-	// gradient tests
-			lap2 += (k < 2 ? size_j : size_i) * node->getFaceGradient(totalLevels, k, P);
 		double error = fabs(laplacian - node->divV);
-		if (fabs(laplacian - lap2) > .0001)
-			printf("divv: %f, lap: %f, lap2: %f, error: %f\n", node->divV, laplacian, lap2, error);
 		*maxL = fmax(*maxL, error);
 		*avgL += error / size_i/size_j;
 		
@@ -2459,7 +2451,20 @@ void runProjectTest() {
 	
 }
 
-
+void computeResultStats(int n, double results[]) {
+	double sum = 0.0;
+	for (int i = 0; i < n; i++) {
+		sum += results[i];
+	}
+	double avg = sum / n;
+	double var = 0.0;
+	for (int i = 0; i < n; i++) {
+		var += (avg - results[i]) * (avg - results[i]);
+	}
+	var /= n-1;
+	double stdev = sqrt(var);
+	printf("mean: %f, SD: %f\n", avg, stdev);
+}
 
 void initSim() {
 	printf("init sim\n");
@@ -2510,13 +2515,16 @@ void initSim() {
 
 		for (int i = 0; i < warmupRuns; i++) {
 			runPoissonTest(false);
+			printf("prerun %d\n", i+1);
 		}
 
 		if (numToRun == 0) numToRun++;
+		double times[numToRun];
 		for (int i = 0; i < numToRun; i++) {
-			runPoissonTest(true);
+			times[i] = runPoissonTest(true);
 		}
 		checkPoissonError();
+		computeResultStats(numToRun, times);
 		numToRun = 0;
 		return;
 	} else if (startState == ADAPTTEST) {
@@ -2707,6 +2715,10 @@ int main(int argc, char** argv) {
 			thresh = atof(argv[++i]);
 		} else if (!strcmp("-eps", arg)) {
 			eps = atof(argv[++i]);
+		} else if (!strcmp("-k", arg)) {
+			poissonk = atoi(argv[++i]);
+		} else if (!strcmp("-l", arg)) {
+			poissonl = atoi(argv[++i]);
 		}
 	}
 	//levelToDisplay = levels/2;
