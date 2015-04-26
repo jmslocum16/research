@@ -63,6 +63,7 @@ bool drawCells;
 bool screenshot;
 int numToRun = 0;
 int warmupRuns = 0;
+bool pressureInterp = false;
 
 // profiling
 int numLeaves, numNodes;
@@ -246,6 +247,25 @@ class qNode {
 			assert(false);
 		}
 
+		double getValueInterpCorrection(qNode* original, int ml, int k, NodeValue v) {
+			int newk;
+			double dpos;
+			if (k < 2) {
+				// previously computing gradient in y direction, need x direction for interpolation
+				double origX = (original->j + 0.5)/(1<<original->level);
+				double x = (j + 0.5)/(1<<level);
+				dpos = origX - x;
+				newk = dpos > 0 ? 2 : 3;
+			} else {
+				double origY = (original->i + 0.5)/(1<<original->level); 
+				double y = (i + 0.5)/(1<<level);
+				dpos = origY - y;
+				newk = dpos > 0 ? 0 : 1;
+			}
+			double faceGrad = getFaceGradient(ml, newk, v);
+			return fabs(dpos) * faceGrad;
+		}
+
 		double getFaceGradient(int ml, int k, NodeValue v) {
 			qNode* n = this;
 			int oppositeK = (k < 2) ? 1-k : 3-(k%2);//1 - (k%2);
@@ -264,7 +284,12 @@ class qNode {
 				double dside = fmin(1.0/origSize, 1.0/size);
 				double h = 0.5/origSize + 0.5/size;
 				double d = (dside * origSize)/h;
-				return (getVal(v) - original->getVal(v)) * d;
+				double val = getVal(v);
+				if (pressureInterp && original->level > level) {
+					val += getValueInterpCorrection(original, ml, k, v);
+				}
+				
+				return (val - original->getVal(v)) * d;
 			} else {
 				double total = 0.0;
 				if (k < 2) { // y dir
@@ -305,8 +330,14 @@ class qNode {
 				double dside = fmin(1.0/origSize, 1.0/size);
 				double h = 0.5/origSize + 0.5/size;
 				double d = dside/h;
+				double val = getVal(v);
+				if (pressureInterp && original->level > level) {
+					val += getValueInterpCorrection(original, ml, k, v);
+				}
+
+
 				*aSum -= d;
-				*bSum += d*getVal(v);
+				*bSum += d*val;
 			} else {
 				if (k < 2) { // y dir
 					int targetI = 1 - k;
@@ -952,6 +983,72 @@ void testNeighbors() {
 	}
 }
 
+void assertf (int id, double a, double b) {
+	//printf("test for id: %d\n", id);
+	if (fabs(a-b) > .00001) {
+		printf("id %d incorrect!, a: %f, b: %f\n", id, a, b);
+		assert (false);
+	}
+}
+
+void testPressureInterp() {
+	int oldLevels = levels;	
+	bool oldPressureInterp = pressureInterp;
+	levels = 3;
+	pressureInterp = true;
+
+	qNode* testRoot = new qNode(NULL, 0, 0);
+	testRoot->expand(false);
+	testRoot->children[1]->expand(false);
+
+	testRoot->children[0]->p = 1;
+	testRoot->children[2]->p = 6;
+	testRoot->children[3]->p = 7;
+	testRoot->children[1]->children[0]->p = 2;
+	testRoot->children[1]->children[1]->p = 3;
+	testRoot->children[1]->children[2]->p = 4;
+	testRoot->children[1]->children[3]->p = 5;
+
+	assertf(0, testRoot->children[0]->getFaceGradient(2, 0, P), 10.0);
+	assertf(1, testRoot->children[0]->getFaceGradient(2, 1, P), 0);
+	assertf(2, testRoot->children[0]->getFaceGradient(2, 2, P), 16.0/3.0);
+	assertf(3, testRoot->children[0]->getFaceGradient(2, 3, P), 0);
+
+	assertf(4, testRoot->children[2]->getFaceGradient(2, 0, P), 0);
+	assertf(5, testRoot->children[2]->getFaceGradient(2, 1, P), -10.0);
+	assertf(6, testRoot->children[2]->getFaceGradient(2, 2, P), 2.0);
+	assertf(7, testRoot->children[2]->getFaceGradient(2, 3, P), 0);
+
+	assertf(8, testRoot->children[3]->getFaceGradient(2, 0, P), 0);
+	assertf(9, testRoot->children[3]->getFaceGradient(2, 1, P), -20.0/3.0);
+	assertf(10, testRoot->children[3]->getFaceGradient(2, 2, P), 0.0);
+	assertf(11, testRoot->children[3]->getFaceGradient(2, 3, P), -2.0);
+
+	assertf(12, testRoot->children[1]->children[0]->getFaceGradient(2, 0, P), 8.0);
+	assertf(13, testRoot->children[1]->children[0]->getFaceGradient(2, 1, P), 0.0);
+	assertf(14, testRoot->children[1]->children[0]->getFaceGradient(2, 2, P), 4.0);
+	assertf(15, testRoot->children[1]->children[0]->getFaceGradient(2, 3, P), -8.0/3.0);
+
+	assertf(16, testRoot->children[1]->children[1]->getFaceGradient(2, 0, P), 8.0);
+	assertf(17, testRoot->children[1]->children[1]->getFaceGradient(2, 1, P), 0.0);
+	assertf(18, testRoot->children[1]->children[1]->getFaceGradient(2, 2, P), 0.0);
+	assertf(19, testRoot->children[1]->children[1]->getFaceGradient(2, 3, P), -4.0);
+
+	assertf(20, testRoot->children[1]->children[2]->getFaceGradient(2, 0, P), 22.0/3.0);
+	assertf(21, testRoot->children[1]->children[2]->getFaceGradient(2, 1, P), -8.0);
+	assertf(22, testRoot->children[1]->children[2]->getFaceGradient(2, 2, P), 4.0);
+	assertf(23, testRoot->children[1]->children[2]->getFaceGradient(2, 3, P), -14.0/3.0);
+
+	assertf(24, testRoot->children[1]->children[3]->getFaceGradient(2, 0, P), 16.0/3);
+	assertf(25, testRoot->children[1]->children[3]->getFaceGradient(2, 1, P), -8.0);
+	assertf(26, testRoot->children[1]->children[3]->getFaceGradient(2, 2, P), 0.0);
+	assertf(27, testRoot->children[1]->children[3]->getFaceGradient(2, 3, P), -4.0);
+
+
+	levels = oldLevels;
+	pressureInterp = oldPressureInterp;
+	delete testRoot;
+}
 
 void testAdvect() {
 	int oldLevels = levels;
@@ -2403,6 +2500,8 @@ int main(int argc, char** argv) {
 			poissonk = atoi(argv[++i]);
 		} else if (!strcmp("-l", arg)) {	
 			poissonl = atoi(argv[++i]);
+		} else if (!strcmp("--pressureinterp", arg)) {
+			pressureInterp = true;
 		}
 	}
 	//levelToDisplay = levels/2;
@@ -2413,6 +2512,7 @@ int main(int argc, char** argv) {
 	//testNeighbors();
 	//testMultilevelNeighbors();
 	//testIntersect();
+	testPressureInterp();
 
 	initSim();
 	
