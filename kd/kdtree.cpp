@@ -351,7 +351,7 @@ class kdNode {
 			}
 		}*/
 
-		double getValueInterpCorrection(kdNode* original, int ml, int k, NodeValue v) {
+		double getValueInterpCorrection(kdNode* original, int ml, int k, NodeValue v, int left) {
 			int newk;
 			double dpos;
 			if (k < 2) {
@@ -366,7 +366,7 @@ class kdNode {
 				dpos = origY - y;
 				newk = dpos > 0 ? 0 : 1;
 			}
-			double faceGrad = getFaceGradient(ml, newk, v);
+			double faceGrad = getFaceGradient(ml, newk, v, left-1);
 			return fabs(dpos) * faceGrad;
 		}
 
@@ -424,6 +424,10 @@ class kdNode {
 		}
 
 		double getFaceGradient(int ml, int k, NodeValue v) {
+			return getFaceGradient(ml, k, v, levels);
+		}
+
+		double getFaceGradient(int ml, int k, NodeValue v, int left) {
 			int oppositeK = (k < 2) ? 1-k : 3-(k%2);//1 - (k%2);
 			/*kdNode* n = this;
 			while (n != NULL && n->neighbors[k] == NULL) n = n->parent;
@@ -441,7 +445,7 @@ class kdNode {
 			if (n == NULL) {
 				return 0;
 			} else {
-				return n->addFaceToGradient(this, ml, oppositeK, v);
+				return n->addFaceToGradient(this, ml, oppositeK, v, left);
 			}
 
 		}
@@ -468,7 +472,7 @@ class kdNode {
 				return total;
 			}
 		}*/
-		double addFaceToGradient(kdNode* original, int ml, int k, NodeValue v) {
+		double addFaceToGradient(kdNode* original, int ml, int k, NodeValue v, int left) {
 			if (leaf || (level_i+level_j) == ml) {
 				int horig = 1<< (k < 2 ? original->level_i : original->level_j);
 				int hn = 1<< (k < 2 ? level_i : level_j);
@@ -479,19 +483,19 @@ class kdNode {
 				int origLevel = (k < 2 ? original->level_j : original->level_i);
 				int thisLevel = (k < 2 ? level_j : level_i);
 				double val = getVal(v);
-				if (pressureInterp && origLevel > thisLevel) {
-					val += getValueInterpCorrection(original, ml, k, v);
+				if (pressureInterp && origLevel > thisLevel && left > 0) {
+					val += getValueInterpCorrection(original, ml, k, v, left);
 				}
 
 				return (val - original->getVal(v))/h;
 			} else {
 				double total = 0.0;
 				if ((k < 2 && splitDir == SPLIT_X) || (k >= 2 && splitDir == SPLIT_Y)) {
-					total += children[0]->addFaceToGradient(original, ml, k, v);
-					total += children[1]->addFaceToGradient(original, ml, k, v);
+					total += children[0]->addFaceToGradient(original, ml, k, v, left);
+					total += children[1]->addFaceToGradient(original, ml, k, v, left);
 					total /= 2.0;
 				} else {
-					total += children[1-(k%2)]->addFaceToGradient(original, ml, k, v);
+					total += children[1-(k%2)]->addFaceToGradient(original, ml, k, v, left);
 				}
 				return total;
 			}
@@ -540,7 +544,7 @@ class kdNode {
 				int thisLevel = (k < 2 ? level_j : level_i);
 				double val = getVal(v);
 				if (pressureInterp && origLevel > thisLevel) {
-					val += getValueInterpCorrection(original, ml, k, v);
+					val += getValueInterpCorrection(original, ml, k, v, levels);
 				}
 
 
