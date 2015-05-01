@@ -518,62 +518,89 @@ class qNode {
 			leaf = false;
 		}
 
-		// x is which axis edge is on (so opposite velocity is needed)
 		void getNodalSide(int ni, int nj, int* retL, double* retV, bool x, bool left, int targetLevel) {
 			int leveldif = targetLevel - level;
+			int maxi = i * (1<<leveldif);
+			int maxj = j * (1<<leveldif);
+		
+			if (leaf) {
+				if (*retL >= level) return;
+				if (!((ni == maxi || ni == maxi + (1<<leveldif)) && (nj == maxj || nj == maxj + (1<<leveldif)))) return;
+				if (x) {
+					if (ni == maxi && left) return;
+					if (ni != maxi && !left) return;
+					*retL = level;
+					if (nj == maxj)
+						*retV = vx;
+					else
+						*retV = vx2;
+				} else {
+					if (nj == maxj && left) return;
+					if (nj != maxj && !left) return;
+					*retL = level;
+					if (ni == maxi)
+						*retV = vy;
+					else
+						*retV = vy2;
+				}
+				return;
+			}
+
 			int middist = 1<<(leveldif-1);
 			int midi = i * (1<<leveldif) + middist;
 			int midj = j * (1<<leveldif) + middist;
 			
-			if (leaf) {
-				if (*retL > level) return;
-				if (!((ni == midi - middist || ni == midi + middist) && (nj == midj - middist || nj == midj + middist))) return;
-				if (x) {
-					if (nj < midj && left) return;
-					if (nj > midj && !left) return;
-					*retL = level;
-					if (ni < midi)
-						*retV = vy;
-					else
-						*retV = vy2;
-				} else {
-					if (ni < midi && left) return;
-					if (ni > midi && !left) return;
-					*retL = level;
-					if (nj < midj)
-						*retV = vx;
-					else
-						*retV = vx2;
-				}
-				return;
-			}
 			if (ni != midi && nj != midj) {
 				int newi = (ni < midi) ? 0 : 1;
 				int newj = (nj < midj) ? 0 : 1;
-				return children[2*newi+newj]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);
+				children[2*newi+newj]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);
 			} else if (ni != midi) {
 				// j is on mid
-				assert (!x);
-				if (left) {
-					for (int k = 2; k < 4; k++)
-						children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);	
+				assert (nj == midj);
+				if (x) {
+					if (ni > midi) {
+						for (int k = 2; k < 4; k++)
+							children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);	
+					} else {
+						for (int k = 0; k < 2; k++)
+							children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);		
+					}
 				} else {
-					for (int k = 0; k < 2; k++)
-						children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);		
+					// call it on 1 child
+					int newi = (ni < midi) ? 0 : 1;
+					int newj = (left) ? 0 : 1;
+					children[2*newi+newj]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);	
 				}
 			} else if (nj != midj) {
-				assert (x);
-				if (left) {
-					for (int k = 1; k < 4; k+=2)
-						children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);	
+				assert (ni == midi);
+				if (!x) {
+					if (nj > midj) {
+						for (int k = 1; k < 4; k+=2)
+							children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);	
+					} else {
+						for (int k = 0; k < 4; k+=2)
+							children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);		
+					}
 				} else {
-					for (int k = 0; k < 4; k+=2)
-						children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);		
+					int newj = (nj < midj) ? 0 : 1;
+					int newi = (left) ? 0  : 1;
+					children[2*newi + newj]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);
 				}
 
 			} else {
-				for (int k = 0; k < 4; k++)
-					children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);
+				if (x && left) {
+					for (int k = 0; k < 2; k++)
+						children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);
+				} else if (x && !left) {
+					for (int k = 2; k < 4; k++)
+						children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);
+				} else if (!x && left) {
+					for (int k = 0; k < 4; k += 2)
+						children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);
+				} else {
+					for (int k = 1; k < 4; k += 2)
+						children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);
+				}
 			}
 		}
 
@@ -585,11 +612,11 @@ class qNode {
 				double delta = .5/(1<<leveldif);
 				double va, vb, vc, vd;
 				double di, dj;
-				di = (((double)i)/level - ((double)ni)/nl) * (1<<level);
-				dj = (((double)j)/level - ((double)nj)/nl) * (1<<level);
-				if (x) {
+				di = (((double)ni)/(1<<nl) - ((double)i)/(1<<level)) * (1<<level);
+				dj = (((double)nj)/(1<<nl) - ((double)j)/(1<<level)) * (1<<level);
+				if (!x) {
 					if (left) {
-						assert (dj > .5);
+						assert (dj >= .5);
 						// right side of cell
 						if (!cvyValid[1] || !cvyValid[3]) return false;
 						va = vy;
@@ -599,7 +626,7 @@ class qNode {
 						dj -= delta;
 						dj -= .5;
 					} else {
-						assert (dj < .5);
+						assert (dj <= .5);
 						// left side of cell
 						if (!cvyValid[0] || !cvyValid[2]) return false;
 						va = cvy[0];
@@ -611,7 +638,7 @@ class qNode {
 					dj *= 2.0;
 				} else {
 					if (left) {
-						assert (di > .5);
+						assert (di >= .5);
 						// bottom side of cell
 						if (!cvxValid[2] || !cvxValid[3]) return false;
 						va = vx;
@@ -622,7 +649,7 @@ class qNode {
 						di -= .5;
 					} else {
 						// top side of cell
-						assert (di < .5);
+						assert (di <= .5);
 						if (!cvxValid[0] || !cvxValid[1]) return false;
 						va = cvx[0];
 						vb = cvx[1];
@@ -633,13 +660,25 @@ class qNode {
 					di *= 2.0;
 				}
 				*retV = bilinearInterpolation(va, vb, vc, vd, di, dj);
+				return true;
 			} else {
 				int leveldif = nl - level;
 				int midi = i * (1<<leveldif) + (1<<(leveldif-1));
 				int midj = j * (1<<leveldif) + (1<<(leveldif-1));
-				assert (ni != midi && nj != midj); // otherwise we wouldn't be artificially discretizing
-				int nexti = (i < midi) ? 0 : 1;
-				int nextj = (j < midj) ? 0 : 1;
+				assert (ni != midi || nj != midj); // otherwise we wouldn't be artificially discretizing
+				int nexti, nextj;
+				if (ni < midi)
+					nexti = 0;
+				else if (ni > midi)
+					nexti = 1;
+				else
+					nexti = (left) ? 0 : 1;
+				if (nj < midj)
+					nextj = 0;
+				else if (nj > midj)
+					nextj = 1;
+				else
+					nextj = (left) ? 0 : 1;
 				return children[nexti*2+nextj]->getArtificialValue(ni, nj, nl, x, left, retV);
 			}
 		}
@@ -658,16 +697,23 @@ class qNode {
 					return true;
 				}
 				if (ni == 0 || ni == size) {
-					*ret = (cj == 0) ? vx : vx2;
+					//*ret = (cj == 0) ? vx : vx2;
+					bool left = (ni == size);
+					int leveldif = levels - 1 - level;
+					int garbage = -1;
+					r->getNodalSide(ni * (1<<leveldif), nj * (1<<leveldif), &garbage, ret, x, left, levels - 1);
 					return true;	
 				}
 			} else {
 				if (ni == 0 || ni == size) {
-					*ret == 0;
+					*ret = 0;
 					return true;	
 				}
 				if (nj == 0 || nj == size) {
-					*ret = (ci == 0) ? vy : vy2;
+					bool left = (nj == size);
+					int leveldif = levels - 1 - level;
+					int garbage = -1;
+					r->getNodalSide(ni * (1<<leveldif), nj * (1<<leveldif), &garbage, ret, x, left, levels - 1);
 					return true;
 				}
 
@@ -691,13 +737,14 @@ class qNode {
 				return true;
 			} else if (haveR) {
 				valL = valR;
-				levelL = valR;
+				levelL = levelR;
 				left = true;
 				haveL = true;
 			}
 			assert (haveL);
 			assert (levelL >= level);
-			if (r->getArtificialValue(ni, nj, level, x, left, &valR)) {
+			leveldif = levelL - level;
+			if (r->getArtificialValue(ni * (1<<leveldif), nj * (1<<leveldif), levelL, x, left, &valR)) {
 				*ret = (valR + valL)/2.0;
 				return true;
 			}
@@ -741,6 +788,18 @@ class qNode {
 					}
 				}
 				return total;
+			}
+		}
+
+		void invalidateNodalValues() {
+			for (int c = 0; c < 4; c++) {
+				cvxValid[c] = false;
+				cvyValid[c] = false;
+			}
+			if (!leaf) {
+				for (int k = 0; k < 4; k++) {
+					children[k]->invalidateNodalValues();
+				}
 			}
 		}
 
@@ -1217,7 +1276,7 @@ void assertf (int id, double a, double b) {
 	//printf("test for id: %d\n", id);
 	if (fabs(a-b) > .00001) {
 		printf("id %d incorrect!, a: %f, b: %f\n", id, a, b);
-		assert (false);
+		//assert (false);
 	}
 }
 
@@ -1280,6 +1339,7 @@ void testPressureInterp() {
 }
 
 void computeNodalVelocity(qNode* root) {
+	root->invalidateNodalValues();
 	// loop to try to figure out if done
 	int oldTotalLeft;
 	int totalLeft = 10000000;
@@ -1412,20 +1472,20 @@ void testNodalVelocity() {
 	assertf(23, root->children[2]->cvy[3], 0.0);
 
 	// middle corner
-	assertf(24, root->children[0]->cvx[3], 15.5);
-	assertf(25, root->children[1]->cvx[2], 15.5);
-	assertf(26, root->children[2]->cvx[1], 15.5);
-	assertf(27, root->children[3]->cvx[0], 15.5);
-	assertf(28, root->children[0]->children[3]->cvx[3], 15.5);
-	assertf(29, root->children[0]->children[3]->children[3]->cvx[3], 15.5);
-	assertf(30, root->children[3]->children[0]->cvx[0], 15.5);
-	assertf(31, root->children[0]->cvy[3], 15.5);
-	assertf(32, root->children[1]->cvy[2], 15.5);
-	assertf(33, root->children[2]->cvy[1], 15.5);
-	assertf(34, root->children[3]->cvy[0], 15.5);
-	assertf(35, root->children[0]->children[3]->cvy[3], 15.5);
-	assertf(36, root->children[0]->children[3]->children[3]->cvy[3], 15.5);
-	assertf(37, root->children[3]->children[0]->cvy[0], 15.5);
+	assertf(24, root->children[0]->cvx[3], 44.0/3.0);
+	assertf(25, root->children[1]->cvx[2], 44.0/3.0);
+	assertf(26, root->children[2]->cvx[1], 44.0/3.0);
+	assertf(27, root->children[3]->cvx[0], 44.0/3.0);
+	assertf(28, root->children[0]->children[3]->cvx[3], 44.0/3.0);
+	assertf(29, root->children[0]->children[3]->children[3]->cvx[3], 44.0/3.0);
+	assertf(30, root->children[3]->children[0]->cvx[0], 44.0/3.0);
+	assertf(31, root->children[0]->cvy[3], 46.0/3.0);
+	assertf(32, root->children[1]->cvy[2], 46.0/3.0);
+	assertf(33, root->children[2]->cvy[1], 46.0/3.0);
+	assertf(34, root->children[3]->cvy[0], 46.0/3.0);
+	assertf(35, root->children[0]->children[3]->cvy[3], 46.0/3.0);
+	assertf(36, root->children[0]->children[3]->children[3]->cvy[3], 46.0/3.0);
+	assertf(37, root->children[3]->children[0]->cvy[0], 46.0/3.0);
 
 	//
 	assertf(38, root->children[0]->children[0]->cvx[1], 1);
@@ -1441,13 +1501,13 @@ void testNodalVelocity() {
 	assertf(46, root->children[0]->children[1]->cvx[3], 6);
 	assertf(47, root->children[0]->children[3]->cvx[1], 6);
 	assertf(48, root->children[0]->children[3]->children[1]->cvx[1], 6);
-	assertf(49, root->children[0]->children[1]->cvy[3], 103.0/16.0);
-	assertf(50, root->children[0]->children[3]->cvy[1], 103.0/16.0);
-	assertf(51, root->children[0]->children[3]->children[1]->cvy[1], 103.0/16.0);
+	assertf(49, root->children[0]->children[1]->cvy[3], 6.40625);
+	assertf(50, root->children[0]->children[3]->cvy[1], 6.40625);
+	assertf(51, root->children[0]->children[3]->children[1]->cvy[1], 6.40625);
 
-	assertf(52, root->children[0]->children[3]->cvx[2], 309.0/32.0);
-	assertf(53, root->children[0]->children[3]->children[2]->cvx[2], 309.0/32.0);
-	assertf(54, root->children[0]->children[2]->cvx[3], 309.0/32.0);
+	assertf(52, root->children[0]->children[3]->cvx[2], 9.5);
+	assertf(53, root->children[0]->children[3]->children[2]->cvx[2], 9.5);
+	assertf(54, root->children[0]->children[2]->cvx[3], 9.5);
 	assertf(55, root->children[0]->children[3]->cvy[2], 13);
 	assertf(56, root->children[0]->children[3]->children[2]->cvy[2], 13);
 	assertf(57, root->children[0]->children[2]->cvy[3], 13);
@@ -1465,13 +1525,13 @@ void testNodalVelocity() {
 	assertf(67, root->children[0]->children[3]->children[0]->cvy[0], 11.0/3.0);
 
 	///
-	assertf(68, root->children[3]->children[0]->cvx[1], 275.0/16.0);
-	assertf(69, root->children[3]->children[1]->cvx[0], 275.0/16.0);
+	assertf(68, root->children[3]->children[0]->cvx[1], 145.0/12.0);
+	assertf(69, root->children[3]->children[1]->cvx[0], 145.0/12.0);
 	assertf(70, root->children[3]->children[0]->cvy[1], 16.5);
 	assertf(71, root->children[3]->children[1]->cvy[0], 16.5);
 
-	assertf(72, root->children[3]->children[0]->cvy[2], 57.0/8.0);
-	assertf(73, root->children[3]->children[2]->cvy[0], 57.0/8.0);
+	assertf(72, root->children[3]->children[0]->cvy[2], 325.0/24.0);
+	assertf(73, root->children[3]->children[2]->cvy[0], 325.0/24.0);
 	assertf(74, root->children[3]->children[0]->cvx[2], 20);
 	assertf(75, root->children[3]->children[2]->cvx[0], 20);
 
@@ -1480,10 +1540,10 @@ void testNodalVelocity() {
 	assertf(78, root->children[3]->children[1]->cvy[3], 21);
 	assertf(79, root->children[3]->children[3]->cvy[1], 21);
 
-	assertf(80, root->children[3]->children[3]->cvx[2], 0.0);
-	assertf(81, root->children[3]->children[2]->cvx[3], 0.0);
-	assertf(82, root->children[3]->children[3]->cvy[2], 23);
-	assertf(83, root->children[3]->children[2]->cvy[3], 23);
+	assertf(80, root->children[3]->children[3]->cvx[2], 23);
+	assertf(81, root->children[3]->children[2]->cvx[3], 23);
+	assertf(82, root->children[3]->children[3]->cvy[2], 0.0);
+	assertf(83, root->children[3]->children[2]->cvy[3], 0.0);
 
 	assertf(84, root->children[3]->children[0]->cvx[3], 21);
 	assertf(85, root->children[3]->children[0]->cvy[3], 20.5);	
@@ -1495,23 +1555,23 @@ void testNodalVelocity() {
 	assertf(91, root->children[3]->children[3]->cvy[0], 20.5);	
 
 	///
-	assertf(92, root->children[0]->children[3]->children[0]->cvx[1], 10.0/3.0);
-	assertf(93, root->children[0]->children[3]->children[1]->cvx[0], 10.0/3.0);
+	assertf(92, root->children[0]->children[3]->children[0]->cvx[1], 31.0/6.0);
+	assertf(93, root->children[0]->children[3]->children[1]->cvx[0], 31.0/6.0);
 	assertf(94, root->children[0]->children[3]->children[0]->cvy[1], 4.5);
 	assertf(95, root->children[0]->children[3]->children[1]->cvy[0], 4.5);
 
-	assertf(96, root->children[0]->children[3]->children[0]->cvy[2], 23.0/3.0);
-	assertf(97, root->children[0]->children[3]->children[2]->cvy[0], 23.0/3.0);
+	assertf(96, root->children[0]->children[3]->children[0]->cvy[2], 25.0/3.0);
+	assertf(97, root->children[0]->children[3]->children[2]->cvy[0], 25.0/3.0);
 	assertf(98, root->children[0]->children[3]->children[0]->cvx[2], 8.5);
 	assertf(99, root->children[0]->children[3]->children[2]->cvx[0], 8.5);
 
 	assertf(100, root->children[0]->children[3]->children[1]->cvx[3], 10.5);
 	assertf(101, root->children[0]->children[3]->children[3]->cvx[1], 10.5);
-	assertf(102, root->children[0]->children[3]->children[1]->cvy[3], 349.0/32.0);
-	assertf(103, root->children[0]->children[3]->children[3]->cvy[1], 349.0/32.0);
+	assertf(102, root->children[0]->children[3]->children[1]->cvy[3], 10.859375);
+	assertf(103, root->children[0]->children[3]->children[3]->cvy[1], 10.859375);
 
-	assertf(104, root->children[0]->children[3]->children[3]->cvx[2], 535.0/64.0);
-	assertf(105, root->children[0]->children[3]->children[2]->cvx[3], 535.0/64.0);
+	assertf(104, root->children[0]->children[3]->children[3]->cvx[2], 12.0);
+	assertf(105, root->children[0]->children[3]->children[2]->cvx[3], 12.0);
 	assertf(106, root->children[0]->children[3]->children[3]->cvy[2], 14.5);
 	assertf(107, root->children[0]->children[3]->children[2]->cvy[3], 14.5);
 	
@@ -1809,6 +1869,7 @@ void setNewAdvect(qNode* node, qNode* oldNode) {
 			newvel = last->getVelocityAt(x, y);
 			node->vy2 = newvel.second;
 		}
+		//printf("computed new velocities for node: %f, %f, %f, %f\n", node->vx, node->vx2, node->vy, node->vy2);
 	} else {
 
 		// average child velocities to this node
