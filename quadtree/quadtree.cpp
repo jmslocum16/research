@@ -365,11 +365,13 @@ class qNode {
 		
 		// curl(F) = d(Fy)/dx - d(Fx)/dy
 		double getCurl() {
-			assert (false);
 			 //TODO fix
-			std::pair<double, double> xgrad = getValueGradient(VX);
-			std::pair<double, double> ygrad = getValueGradient(VY);
-			return ygrad.first - xgrad.second;
+			double y1 = (cvy[0] + cvy[2])/2.0;
+			double y2 = (cvy[1] + cvy[3])/2.0;
+			double x1 = (cvx[0] + cvx[1])/2.0;
+			double x2 = (cvx[2] + cvx[3])/2.0;
+			int size = 1<<level;
+			return (x2-x1)/size + (y2-y1)/size;
 		}
 
 		void computeVelocityDivergence() {
@@ -1967,8 +1969,8 @@ void eulerAdvectParticle(Particle& p, std::pair<double, double> v) {
 
 void advectParticles() {
 	for (int i = 0; i < numParticles; i++) {
-		std::pair<double, double> vGrad = getLeaf(root, particles[i].x, particles[i].y, levels-1)->getVelocityAt(particles[i].x, particles[i].y);
 		if (particleAlgorithm == EULER) {
+		std::pair<double, double> vGrad = getLeaf(root, particles[i].x, particles[i].y, levels-1)->getVelocityAt(particles[i].x, particles[i].y);
 			eulerAdvectParticle(particles[i], vGrad);
 		}
 	}	
@@ -2087,6 +2089,17 @@ void runStep() {
 	startTime();
 	advectAndCopy();
 	totalTime += endTime("advecting and copying");
+
+	printf ("doing adaptivity\n");
+	startTime();
+    // given new state, do adaptivity
+	if (adaptScheme != ADAPTNONE) {
+		std::swap(root, oldRoot);
+		recursiveAdaptAndCopy(root, oldRoot);
+	}
+	totalTime += endTime("adapting");
+
+	return;
 	
 	printf("computing divV\n");
 
@@ -2117,15 +2130,6 @@ void runStep() {
 	printf("end poisson solver, took %d cycles\n", numCycles);
 	totalTime += endTime("poisson solver");
 	
-
-	printf ("doing adaptivity\n");
-	startTime();
-    // given new state, do adaptivity
-	if (adaptScheme != ADAPTNONE) {
-		std::swap(root, oldRoot);
-		recursiveAdaptAndCopy(root, oldRoot);
-	}
-	totalTime += endTime("adapting");
 
 	startTime();
 	double max = 0.0;
