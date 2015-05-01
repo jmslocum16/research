@@ -762,10 +762,14 @@ class qNode {
 					if (!cvxValid[c] && attemptComputeNodalValue(r, c, true, &v)) {
 						cvxValid[c] = true;
 						cvx[c] = v;
+						if (v > 0)
+							printf("(%d)[%d][%d] node %d x: %f\n", level, i, j, c, cvx[c]);
 					}
 					if (!cvyValid[c] && attemptComputeNodalValue(r, c, false, &v)) {
 						cvyValid[c] = true;
 						cvy[c] = v;
+						if (v > 0)
+							printf("(%d)[%d][%d] node %d y: %f\n", level, i, j, c, cvy[c]);
 					}
 				}
 
@@ -882,6 +886,7 @@ qNode* getLeaf(qNode* node, double x, double y, int ml) {
 }
 
 qNode*  getSemiLagrangianLookback(qNode* r, double* x, double* y, int steps, int ml, double vx, double vy) {
+	//printf("starting SL velocity: %f, %f\n",vx, vy);
 	double newdt = dt / steps;
 	qNode* cur;
 	while (steps--) {	
@@ -1889,7 +1894,7 @@ void advectAndCopy() {
 	// set nodal values on new tree to advected nodal values on old tree
 	setNewAdvect(root, oldRoot);
 
-	// computeNodalVelocities(root);
+	computeNodalVelocity(root);
 }
 
 void correctPressure(qNode* node) {
@@ -2163,9 +2168,12 @@ void initNodeLeftUniform(qNode* node) {
 	node->p = 0.0;
 	node->vx = 0.0;
 	node->vy = 0.0;
+	node->vx2 = 0.0;
+	node->vy2 = 0.0;
 	node->phi = 0.0;
 	if (node->i == size/2 || node->i == size/2-1) {
 		node->vx = -1.0;
+		node->vx2 = -1.0;
 	}	
 }
 
