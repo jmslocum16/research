@@ -173,9 +173,10 @@ class kdNode {
 		// math stuffs
 		double p, dp, R, phi, divV, temp; // pressure ,x velocity, y velocity, pressure correction, residual, level set value
 		double vx, vy, vx2, vy2;
-		//double cvx[4];
-		//double cvy[4];
-		double cvx, cvy;
+		bool cvxValid[4];
+		double cvx[4];
+		bool cvyValid[4];
+		double cvy[4];
 
 		kdNode(kdNode *p, int li, int lj, int i, int j): parent(p), level_i(li), level_j(lj), i(i), j(j) {
 			id = nodeId++;
@@ -429,16 +430,6 @@ class kdNode {
 
 		double getFaceGradient(int ml, int k, NodeValue v, int left) {
 			int oppositeK = (k < 2) ? 1-k : 3-(k%2);//1 - (k%2);
-			/*kdNode* n = this;
-			while (n != NULL && n->neighbors[k] == NULL) n = n->parent;
-			if (n != NULL) {
-				int newi = i + deltas[k][0];
-				int newj = j + deltas[k][1];
-				n = n->neighbors[k]->get(level_i, level_j, newi, newj, true);
-				return n->addFaceToGradient(this, ml, oppositeK, v);
-			} else {
-				return 0;
-			}*/
 			int targetLevel = (k < 2 ? level_j : level_i);
 			int targetCoord = (k < 2 ? j : i);
 			kdNode* n = getNeighborInDir(targetCoord, targetLevel, k);
@@ -450,28 +441,6 @@ class kdNode {
 
 		}
 
-		/*double addFaceToGradient(kdNode* original, int ml, int k, NodeValue v) {
-			if (leaf || (level_i+level_j) == ml) {
-				int horig = 1<< (k < 2 ? original->level_i : original->level_j);
-				int hn = 1<< (k < 2 ? level_i : level_j);
-				double h = 0.5/horig + 0.5/hn;
-
-				double worig = 1 << (k < 2 ? original->level_j : original->level_i);
-				double wn = 1 << (k < 2 ? level_j : level_i);
-				double dside = fmin(1.0/worig, 1.0/wn);
-				double d = (dside * worig)/h;
-				return (getVal(v) - original->getVal(v)) * d;
-			} else {
-				double total = 0.0;
-				if ((k < 2 && splitDir == SPLIT_X) || (k >= 2 && splitDir == SPLIT_Y)) {
-					total += children[0]->addFaceToGradient(original, ml, k, v);
-					total += children[1]->addFaceToGradient(original, ml, k, v);
-				} else {
-					total += children[1-(k%2)]->addFaceToGradient(original, ml, k, v);
-				}
-				return total;
-			}
-		}*/
 		double addFaceToGradient(kdNode* original, int ml, int k, NodeValue v, int left) {
 			if (leaf || (level_i+level_j) == ml) {
 				int horig = 1<< (k < 2 ? original->level_i : original->level_j);
@@ -504,9 +473,6 @@ class kdNode {
 		void getLaplacian(int ml, double *aSum, double* bSum, NodeValue v) {
 			for (int k = 0; k < 4; k++) {
 				int oppositeK = (k < 2) ? 1-k : 3-(k%2); //1 - (k%2);
-				/*kdNode* n = this;
-				while (n != NULL && n->neighbors[k] == NULL) n = n->parent;
-				*/
 				int targetLevel = (k < 2 ? level_j : level_i);
 				int targetCoord = (k < 2 ? j : i);
 				kdNode* n = getNeighborInDir(targetCoord, targetLevel, k);
@@ -515,10 +481,6 @@ class kdNode {
 					
 					int newi = i + deltas[k][0];
 					int newj = j + deltas[k][1];
-					//n = n->neighbors[k]->get(level_i, level_j, newi, newj, true);
-					
-					//n->neighbors[k]->addFaceToLaplacian(this, ml, oppositeK, aSum, bSum, v);
-
 					n->addFaceToLaplacian(this, ml, oppositeK, aSum, bSum, v);
 				} else {
 					*aSum -= 1;
@@ -572,11 +534,13 @@ class kdNode {
 		
 		// curl(F) = d(Fy)/dx - d(Fx)/dy
 		double getCurl() {
-			assert(false);
-			// TODO fix
-			std::pair<double, double> xgrad = getValueGradient(VX);
-			std::pair<double, double> ygrad = getValueGradient(VY);
-			return ygrad.first - xgrad.second;
+			double y1 = (cvy[0] + cvy[2])/2.0;
+			double y2 = (cvy[1] + cvy[3])/2.0;
+			double x1 = (cvx[0] + cvx[1])/2.0;
+			double x2 = (cvx[2] + cvx[3])/2.0;
+			int size_i = 1<<level_i;
+			int size_j = 1<<level_j;
+			return  -(x2-x1)/size_j + (y2-y1)/size_i;	
 		}
 
 		void computeVelocityDivergence() {
@@ -618,45 +582,9 @@ class kdNode {
 			}
 		}
 
-		/*std::pair<double, double> getNodal(int nl, int ni, int nj) {
-			int nsize = 1<<nl;
-			double x, y;
-			if (nj == 0 || nj == nsize) {
-				x = 0.0;
-			} else if (ni == 0 || ni ==nsize) {
-				//x = 2*vx - get(nl, ni+1, nj)->getNodal(nl, ni+1, nj);
-				x = vx;
-			} else {
-				x = cvx;
-			}
-			if (ni == 0 || ni == nsize) {
-				y = 0.0;
-			} else if (nj == 0 || nj == nsize) {
-				y = vy;
-			} else {
-				y = cvy;
-			}
-			return std::make_pair(x, y);
-		}*/
-
-		/*std::pair<double, double> getNodalAt(kdNode* r, int i, int j) {
-			if (i == 0 && j == 0) {
-				return getNodal(level, i, j);
-			} else if (i == 0 && j == 0) {
-				return r->get(level, i, j+1)->getNodal(level, i, j+1);
-			} else if (i == 1 && j == 0) {
-				return r->get(level, i+1, j)->getNodal(level, i+1, j);
-			} else if (i == i && j == 1) {
-				return r->get(level, i+1, j+1)->getNodal(level, i+1, j+1);
-			} else {
-				assert(false);
-			}
-		}*/
-
-		/*std::pair<double, double> getVelocityAt(kdNode* r, double x, double y) {
-			//return std::make_pair(getValueAt(x, y, VX), getValueAt(x, y, VY));
-			// TODO
-			int size = 1<<level;
+		std::pair<double, double> getVelocityAt(kdNode* r, double x, double y) {
+			int size_i = 1<<level_i;
+			int size_j = 1<<level_j;
 			double minX = ((float)j)/size_j;
 			double minY = ((float)i)/size_i;
 			assert (!(x < minX || y < minY || x > minX + 1.0/size_j || y > minY + 1.0/size_i));
@@ -664,17 +592,11 @@ class kdNode {
 			double dj = (x*size_j)-j;
 			double di = (y*size_i)-i;
 			
-			std::pair<double, double> c00 = getNodalAt(r, 0, 0);
-			std::pair<double, double> c01 = getNodalAt(r, 0, 1);
-			std::pair<double, double> c10 = getNodalAt(r, 1, 0);
-			std::pair<double, double> c11 = getNodalAt(r, 1, 1);
-
-			// x
-			double newvx = bilinearInterpolation(c00.first, c01.first, c10.first, c11.first, di, dj);
-			double newvy = bilinearInterpolation(c00.second, c01.second, c10.second, c11.second, di, dj);	
+			double newvx = bilinearInterpolation(cvx[0], cvx[1], cvx[2], cvx[3], di, dj);
+			double newvy = bilinearInterpolation(cvy[0], cvy[1], cvy[2], cvy[3], di, dj);	
 			return std::make_pair(newvx, newvy);
 
-		}*/
+		}
 		
 		double getValueAt(double x, double y, NodeValue v) {
 			double val;
@@ -711,17 +633,63 @@ class kdNode {
 			if (dir == SPLIT_X) {
 	    		for (int k = 0; k < 2; k++) {
 					children[k] = new kdNode(this, level_i, level_j + 1, i, 2*j + k);
-					if (calculateNewVals) {
-						// TODO
-					}
     			}
+				if (calculateNewVals) {
+					children[0]->cvx[0] = cvx[0];
+					children[0]->cvy[0] = cvy[0];
+					children[0]->cvx[2] = cvx[2];
+					children[0]->cvy[2] = cvy[2];
+					children[1]->cvx[1] = cvx[1];
+					children[1]->cvy[1] = cvy[1];
+					children[1]->cvx[3] = cvx[3];
+					children[1]->cvy[3] = cvy[3];
+					double newv = (cvx[0] + cvx[1])/2.0;
+					children[0]->cvx[1] = newv;
+					children[1]->cvx[0] = newv;
+					newv = (cvy[0] + cvy[1])/2.0;
+					children[0]->cvy[1] = newv;
+					children[1]->cvy[0] = newv;
+					newv = (cvx[2] + cvx[3])/2.0;
+					children[0]->cvx[3] = newv;
+					children[1]->cvx[2] = newv;
+					newv = (cvy[2] + cvy[3])/2.0;
+					children[0]->cvy[3] = newv;
+					children[1]->cvy[2] = newv;
+				}
 			} else {
 				for (int k = 0; k < 2; k++) {
-
 					children[k] = new kdNode(this, level_i + 1, level_j, 2*i + k, j);	
-					if (calculateNewVals) {
-						// TODO
-					}
+				}
+				if (calculateNewVals) {
+					children[0]->cvx[0] = cvx[0];
+					children[0]->cvy[0] = cvy[0];
+					children[0]->cvx[1] = cvx[1];
+					children[0]->cvy[1] = cvy[1];
+					children[1]->cvx[2] = cvx[2];
+					children[1]->cvy[2] = cvy[2];
+					children[1]->cvx[3] = cvx[3];
+					children[1]->cvy[3] = cvy[3];
+					double newv = (cvx[0] + cvx[2])/2.0;
+					children[0]->cvx[2] = newv;
+					children[1]->cvx[0] = newv;
+					newv = (cvy[0] + cvy[2])/2.0;
+					children[0]->cvy[2] = newv;
+					children[1]->cvy[0] = newv;
+					newv = (cvx[1] + cvx[3])/2.0;
+					children[0]->cvx[3] = newv;
+					children[1]->cvx[1] = newv;
+					newv = (cvy[1] + cvy[3])/2.0;
+					children[0]->cvy[3] = newv;
+					children[1]->cvy[1] = newv;
+				}
+			}
+			if (calculateNewVals) {
+				for (int k = 0; k < 2; k++) {
+					children[k]->p = p;
+					children[k]->vx = (cvx[0] + cvx[2])/2.0;
+					children[k]->vx2 = (cvx[1] + cvx[3])/2.0;
+					children[k]->vy = (cvy[0] + cvy[1])/2.0;
+					children[k]->vy2 = (cvy[2] + cvy[3])/2.0;
 				}
 			}
 			setChildrenNeighbors();
@@ -1116,6 +1084,262 @@ void display() {
 }
 
 //tests
+void computeNodalVelocity(kdNode* root) {
+	//root->invalidateNodalValues();
+	// loop to try to figure out if done
+	int oldTotalLeft;
+	int totalLeft = 10000000;
+	while (totalLeft > 0) {
+		oldTotalLeft = totalLeft;
+		//totalLeft = root->attemptComputeNodalVals(root);
+		assert (totalLeft < oldTotalLeft);
+	}
+}
+
+
+/*void testNodalVelocity() {
+	int oldLevels = levels;
+
+	levels = 3;
+
+	root = new kdNode(NULL, 0, 0, 0, 0);
+	root->expand(false, SPLIT_X);
+	root->children[0]->expand(false, SPLIT_Y);
+	root->children[1]->expand(false, SPLIT_Y);
+	root->children[0]->children[0]->expand(false, SPLIT_X);
+	root->children[0]->children[0]->children[1]->expand(false, SPLIT_Y);
+	root->children[0]->children[1]->expand(false, SPLIT_Y);
+	root->children[0]->children[1]->children[0]->expand(false, SPLIT_Y);
+	root->children[1]->children[1]->expand(false, SPLIT_X);
+
+	root->children[0]->vx = 0.0;
+	root->children[0]->vx2 = 26.0/3.0;
+	root->children[0]->vy = 0.0;
+	root->children[0]->vy2 = 0.0;
+
+	root->children[1]->vx = 26.0/3.0;
+	root->children[1]->vx2 = 0.0;
+	root->children[1]->vy = 0.0;
+	root->children[1]->vy2 = 0.0;
+
+	root->children[2]->vx = 0.0;
+	root->children[2]->vx2 = 20;
+	root->children[2]->vy = 13;
+	root->children[2]->vy2 = 0.0;
+
+	root->children[3]->vx = 20;
+	root->children[3]->vx2 = 0.0;
+	root->children[3]->vy = 16.5;
+	root->children[3]->vy2 = 0.0;
+
+	root->children[0]->children[0]->vx = 0.0;
+	root->children[0]->children[0]->vx2 = 1.0;
+	root->children[0]->children[0]->vy = 0.0;
+	root->children[0]->children[0]->vy2 = 3.0;
+
+	root->children[0]->children[1]->vx = 1.0;
+	root->children[0]->children[1]->vx2 = 2.0;
+	root->children[0]->children[1]->vy = 0.0;
+	root->children[0]->children[1]->vy2 = 4.5;
+
+	root->children[0]->children[2]->vx = 0.0;
+	root->children[0]->children[2]->vx2 = 8.5;
+	root->children[0]->children[2]->vy = 3;
+	root->children[0]->children[2]->vy2 = 11;
+
+	root->children[0]->children[3]->vx = 8.5;
+	root->children[0]->children[3]->vx2 = 10.5;
+	root->children[0]->children[3]->vy = 4.5;
+	root->children[0]->children[3]->vy2 = 14.5;
+
+	root->children[3]->children[0]->vx = 18;
+	root->children[3]->children[0]->vx2 = 19;
+	root->children[3]->children[0]->vy = 16;
+	root->children[3]->children[0]->vy2 = 20;
+
+	root->children[3]->children[1]->vx = 19;
+	root->children[3]->children[1]->vx2 = 0.0;
+	root->children[3]->children[1]->vy = 17;
+	root->children[3]->children[1]->vy2 = 21;
+
+	root->children[3]->children[2]->vx = 22;
+	root->children[3]->children[2]->vx2 = 23;
+	root->children[3]->children[2]->vy = 20;
+	root->children[3]->children[2]->vy2 = 0;
+
+	root->children[3]->children[3]->vx = 23;
+	root->children[3]->children[3]->vx2 = 0;
+	root->children[3]->children[3]->vy = 21;
+	root->children[3]->children[3]->vy2 = 0;
+
+	root->children[0]->children[3]->children[0]->vx = 6;
+	root->children[0]->children[3]->children[0]->vx2 = 7;
+	root->children[0]->children[3]->children[0]->vy = 4;
+	root->children[0]->children[3]->children[0]->vy2 = 9;
+
+	root->children[0]->children[3]->children[1]->vx = 7;
+	root->children[0]->children[3]->children[1]->vx2 = 8;
+	root->children[0]->children[3]->children[1]->vy = 5;
+	root->children[0]->children[3]->children[1]->vy2 = 10;
+
+	root->children[0]->children[3]->children[2]->vx = 11;
+	root->children[0]->children[3]->children[2]->vx2 = 12;
+	root->children[0]->children[3]->children[2]->vy = 9;
+	root->children[0]->children[3]->children[2]->vy2 = 14;
+
+	root->children[0]->children[3]->children[3]->vx = 12;
+	root->children[0]->children[3]->children[3]->vx2 = 13;
+	root->children[0]->children[3]->children[3]->vy = 10;
+	root->children[0]->children[3]->children[3]->vy2 = 15;
+
+	computeNodalVelocity(root);
+	
+	assertf(0, root->children[0]->cvx[1], 2);
+	assertf(1, root->children[0]->children[1]->cvx[1], 2);
+	assertf(2, root->children[1]->cvx[0], 2);
+	assertf(3, root->children[0]->cvy[1], 0.0);
+	assertf(4, root->children[0]->children[1]->cvy[1], 0.0);
+	assertf(5, root->children[1]->cvy[0], 0.0);
+
+	assertf(6, root->children[0]->cvy[2], 11);
+	assertf(7, root->children[0]->children[2]->cvy[2], 11);
+	assertf(8, root->children[2]->cvy[0], 11);
+	assertf(9, root->children[0]->cvx[2], 0.0);
+	assertf(10, root->children[0]->children[2]->cvx[2], 0.0);
+	assertf(11, root->children[2]->cvx[0], 0.0);
+
+	assertf(12, root->children[1]->cvy[3], 17);
+	assertf(13, root->children[3]->cvy[1], 17);
+	assertf(14, root->children[3]->children[1]->cvy[1], 17);
+	assertf(15, root->children[1]->cvx[3], 0.0);
+	assertf(16, root->children[3]->cvx[1], 0.0);
+	assertf(17, root->children[3]->children[1]->cvx[1], 0.0);
+
+	assertf(18, root->children[3]->cvx[2], 22);
+	assertf(19, root->children[3]->children[2]->cvx[2], 22);
+	assertf(20, root->children[2]->cvx[3], 22);
+	assertf(21, root->children[3]->cvy[2], 0.0);
+	assertf(22, root->children[3]->children[2]->cvy[2], 0.0);
+	assertf(23, root->children[2]->cvy[3], 0.0);
+
+	// middle corner
+	assertf(24, root->children[0]->cvx[3], 44.0/3.0);
+	assertf(25, root->children[1]->cvx[2], 44.0/3.0);
+	assertf(26, root->children[2]->cvx[1], 44.0/3.0);
+	assertf(27, root->children[3]->cvx[0], 44.0/3.0);
+	assertf(28, root->children[0]->children[3]->cvx[3], 44.0/3.0);
+	assertf(29, root->children[0]->children[3]->children[3]->cvx[3], 44.0/3.0);
+	assertf(30, root->children[3]->children[0]->cvx[0], 44.0/3.0);
+	assertf(31, root->children[0]->cvy[3], 46.0/3.0);
+	assertf(32, root->children[1]->cvy[2], 46.0/3.0);
+	assertf(33, root->children[2]->cvy[1], 46.0/3.0);
+	assertf(34, root->children[3]->cvy[0], 46.0/3.0);
+	assertf(35, root->children[0]->children[3]->cvy[3], 46.0/3.0);
+	assertf(36, root->children[0]->children[3]->children[3]->cvy[3], 46.0/3.0);
+	assertf(37, root->children[3]->children[0]->cvy[0], 46.0/3.0);
+
+	//
+	assertf(38, root->children[0]->children[0]->cvx[1], 1);
+	assertf(39, root->children[0]->children[1]->cvx[0], 1);
+	assertf(40, root->children[0]->children[0]->cvy[1], 0.0);
+	assertf(41, root->children[0]->children[1]->cvy[0], 0.0);
+
+	assertf(42, root->children[0]->children[0]->cvy[2], 3);
+	assertf(43, root->children[0]->children[2]->cvy[0], 3);
+	assertf(44, root->children[0]->children[0]->cvx[2], 0.0);
+	assertf(45, root->children[0]->children[2]->cvx[0], 0.0);
+
+	assertf(46, root->children[0]->children[1]->cvx[3], 6);
+	assertf(47, root->children[0]->children[3]->cvx[1], 6);
+	assertf(48, root->children[0]->children[3]->children[1]->cvx[1], 6);
+	assertf(49, root->children[0]->children[1]->cvy[3], 6.40625);
+	assertf(50, root->children[0]->children[3]->cvy[1], 6.40625);
+	assertf(51, root->children[0]->children[3]->children[1]->cvy[1], 6.40625);
+
+	assertf(52, root->children[0]->children[3]->cvx[2], 9.5);
+	assertf(53, root->children[0]->children[3]->children[2]->cvx[2], 9.5);
+	assertf(54, root->children[0]->children[2]->cvx[3], 9.5);
+	assertf(55, root->children[0]->children[3]->cvy[2], 13);
+	assertf(56, root->children[0]->children[3]->children[2]->cvy[2], 13);
+	assertf(57, root->children[0]->children[2]->cvy[3], 13);
+
+	
+	assertf(58, root->children[0]->children[0]->cvx[3], 13.0/3.0);
+	assertf(59, root->children[0]->children[0]->cvy[3], 11.0/3.0);
+	assertf(60, root->children[0]->children[1]->cvx[2], 13.0/3.0);
+	assertf(61, root->children[0]->children[1]->cvy[2], 11.0/3.0);
+	assertf(62, root->children[0]->children[2]->cvx[1], 13.0/3.0);
+	assertf(63, root->children[0]->children[2]->cvy[1], 11.0/3.0);
+	assertf(64, root->children[0]->children[3]->cvx[0], 13.0/3.0);
+	assertf(65, root->children[0]->children[3]->cvy[0], 11.0/3.0);
+	assertf(66, root->children[0]->children[3]->children[0]->cvx[0], 13.0/3.0);	
+	assertf(67, root->children[0]->children[3]->children[0]->cvy[0], 11.0/3.0);
+
+	///
+	assertf(68, root->children[3]->children[0]->cvx[1], 145.0/12.0);
+	assertf(69, root->children[3]->children[1]->cvx[0], 145.0/12.0);
+	assertf(70, root->children[3]->children[0]->cvy[1], 16.5);
+	assertf(71, root->children[3]->children[1]->cvy[0], 16.5);
+
+	assertf(72, root->children[3]->children[0]->cvy[2], 325.0/24.0);
+	assertf(73, root->children[3]->children[2]->cvy[0], 325.0/24.0);
+	assertf(74, root->children[3]->children[0]->cvx[2], 20);
+	assertf(75, root->children[3]->children[2]->cvx[0], 20);
+
+	assertf(76, root->children[3]->children[1]->cvx[3], 0.0);
+	assertf(77, root->children[3]->children[3]->cvx[1], 0.0);
+	assertf(78, root->children[3]->children[1]->cvy[3], 21);
+	assertf(79, root->children[3]->children[3]->cvy[1], 21);
+
+	assertf(80, root->children[3]->children[3]->cvx[2], 23);
+	assertf(81, root->children[3]->children[2]->cvx[3], 23);
+	assertf(82, root->children[3]->children[3]->cvy[2], 0.0);
+	assertf(83, root->children[3]->children[2]->cvy[3], 0.0);
+
+	assertf(84, root->children[3]->children[0]->cvx[3], 21);
+	assertf(85, root->children[3]->children[0]->cvy[3], 20.5);	
+	assertf(86, root->children[3]->children[1]->cvx[2], 21);	
+	assertf(87, root->children[3]->children[1]->cvy[2], 20.5);	
+	assertf(88, root->children[3]->children[2]->cvx[1], 21);
+	assertf(89, root->children[3]->children[2]->cvy[1], 20.5);	
+	assertf(90, root->children[3]->children[3]->cvx[0], 21);	
+	assertf(91, root->children[3]->children[3]->cvy[0], 20.5);	
+
+	///
+	assertf(92, root->children[0]->children[3]->children[0]->cvx[1], 31.0/6.0);
+	assertf(93, root->children[0]->children[3]->children[1]->cvx[0], 31.0/6.0);
+	assertf(94, root->children[0]->children[3]->children[0]->cvy[1], 4.5);
+	assertf(95, root->children[0]->children[3]->children[1]->cvy[0], 4.5);
+
+	assertf(96, root->children[0]->children[3]->children[0]->cvy[2], 25.0/3.0);
+	assertf(97, root->children[0]->children[3]->children[2]->cvy[0], 25.0/3.0);
+	assertf(98, root->children[0]->children[3]->children[0]->cvx[2], 8.5);
+	assertf(99, root->children[0]->children[3]->children[2]->cvx[0], 8.5);
+
+	assertf(100, root->children[0]->children[3]->children[1]->cvx[3], 10.5);
+	assertf(101, root->children[0]->children[3]->children[3]->cvx[1], 10.5);
+	assertf(102, root->children[0]->children[3]->children[1]->cvy[3], 10.859375);
+	assertf(103, root->children[0]->children[3]->children[3]->cvy[1], 10.859375);
+
+	assertf(104, root->children[0]->children[3]->children[3]->cvx[2], 12.0);
+	assertf(105, root->children[0]->children[3]->children[2]->cvx[3], 12.0);
+	assertf(106, root->children[0]->children[3]->children[3]->cvy[2], 14.5);
+	assertf(107, root->children[0]->children[3]->children[2]->cvy[3], 14.5);
+	
+	assertf(108, root->children[0]->children[3]->children[0]->cvx[3], 9.5);
+	assertf(109, root->children[0]->children[3]->children[0]->cvy[3], 9.5);	
+	assertf(110, root->children[0]->children[3]->children[1]->cvx[2], 9.5);	
+	assertf(111, root->children[0]->children[3]->children[1]->cvy[2], 9.5);	
+	assertf(112, root->children[0]->children[3]->children[2]->cvx[1], 9.5);
+	assertf(113, root->children[0]->children[3]->children[2]->cvy[1], 9.5);	
+	assertf(114, root->children[0]->children[3]->children[3]->cvx[0], 9.5);	
+	assertf(115, root->children[0]->children[3]->children[3]->cvy[0], 9.5);	
+
+	delete root;
+	levels = oldLevels;
+}*/
+
+
 
 // tests neighbor pointers
 void testNeighbors() {
@@ -1576,33 +1800,6 @@ void copy(kdNode* node, kdNode* oldNode) {
 		for (int k = 0; k < 2; k++) {
 			copy(node->children[k], oldNode->children[k]);
 		}
-	}
-}
-
-// assumes face values set
-void computeNodalValues(kdNode* node) {
-	assert (false);
-	if (node->leaf) {
-		if (node->i == 0 || node->j == 0) {
-			node->cvx = 0.0;
-			node->cvy = 0.0;
-			return;
-		}
-		//x
-		kdNode* n = node;
-		while (n->neighbors[3] == NULL) n = n->parent;
-		node->cvx = (n->vx + n->neighbors[3]->vx)/2.0;
-
-		// y
-		n = node;
-		while (n->neighbors[1] == NULL) n = n->parent;
-		node->cvy = (n->vy + n->neighbors[1]->vy)/2.0;
-	} else {
-		for (int k = 0; k < 2; k++) {
-			computeNodalValues(node->children[k]);
-		}
-		node->cvx = node->children[0]->cvx;
-		node->cvy = node->children[0]->cvy;
 	}
 }
 

@@ -371,7 +371,7 @@ class qNode {
 			double x1 = (cvx[0] + cvx[1])/2.0;
 			double x2 = (cvx[2] + cvx[3])/2.0;
 			int size = 1<<level;
-			return (x2-x1)/size + (y2-y1)/size;
+			return  -(x2-x1)/size + (y2-y1)/size;
 		}
 
 		void computeVelocityDivergence() {
@@ -954,7 +954,7 @@ void drawMultilevel(qNode* node, int ml) {
 
 		glRectf(x, y, x + 2.0/size, y + 2.0/size);
 
-		if (drawVelocity && node->level <= 8) {
+		if (drawVelocity) {
 			if (maxMag >= eps) {
 				glColor3f(0.0, 1.0, 0.0);
 				double vx = node->vx;
@@ -1002,7 +1002,7 @@ void computeMax(qNode* node, int ml) {
 			maxP = std::max(maxP, node->p);
 		}
 
-		if (drawVelocity && ml <= 5) {
+		if (drawVelocity) {
 			maxMag = std::max(maxMag, sqrt(node->vx*node->vx + node->vy*node->vy));
 		}
 	} else {
@@ -2098,8 +2098,6 @@ void runStep() {
 		recursiveAdaptAndCopy(root, oldRoot);
 	}
 	totalTime += endTime("adapting");
-
-	return;
 	
 	printf("computing divV\n");
 
