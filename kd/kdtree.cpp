@@ -22,8 +22,8 @@
 
 bool doneVCycle = false;
 
-int MAX_RELAX_COUNT = 200;
-int OPTIMIZED_RELAX_COUNT = 40;
+int MAX_RELAX_COUNT = 20;
+int OPTIMIZED_RELAX_COUNT = 4;
 
 double eps = .0001;
 
@@ -56,6 +56,7 @@ void saveScreen() {
 
 bool headless; // run without ui for profiling
 int levels;
+int totalLevels;
 int levelToDisplay; // level to draw
 bool water;
 bool drawVelocity;
@@ -63,6 +64,7 @@ bool drawCells;
 bool screenshot;
 int numToRun = 0;
 int warmupRuns = 0;
+int MAX_LEVEL_DIF = 2;
 bool pressureInterp = false;
 
 // profiling
@@ -73,20 +75,20 @@ timeval start, end;
 
 void resetProfiling() {
 	if (leafLevels) delete leafLevels;
-	leafLevels = new int[levels];
-	memset(leafLevels, 0, levels * sizeof(int));
+	leafLevels = new int[totalLevels+1];
+	memset(leafLevels, 0, (totalLevels+1) * sizeof(int));
 	numNodes = 0;
 	numLeaves = 0;
 }
 
 void printProfiling() {
 	printf("number of leaves at each level: \n");
-	for (int i = 0; i < levels; i++) {
+	for (int i = 0; i <= totalLevels; i++) {
 		printf("%d: %d\n", i, leafLevels[i]);
 	}
 	printf("total number of nodes: %d\n", numNodes);
 	printf("total number of leaves: %d\n", numLeaves);
-	printf("total number of non-max leaves: %d\n", numLeaves - leafLevels[levels - 1]);
+	printf("total number of leaves at non-max level: %d\n", numLeaves - leafLevels[totalLevels]);
 }
 
 void startTime() {
@@ -154,15 +156,19 @@ double bilinearInterpolation(double a, double b, double c, double d, double di, 
 
 int nodeId = 0;
 enum NodeValue { P, VX, VY, PHI, DP, DIVV };
-class qNode {
+// the dimension that is cut in half by the split
+// vertical is split x, horizontal is split y
+enum SplitDir { SPLIT_NONE, SPLIT_X, SPLIT_Y };
+class kdNode {
 	public:
 		// tree stuffs
 		int id;
-		bool leaf, shouldExpand, shouldContract;
-		qNode* parent;
-		qNode* children[4]; // 2D array in 1D array
-		qNode* neighbors[4];
-		int level, i, j; // level coordinates
+		bool leaf;
+		kdNode* parent;
+		SplitDir splitDir;
+		kdNode* neighbors[4];
+		kdNode* children[2];
+		int level_i, level_j, i, j; // level coordinates
 
 		// math stuffs
 		double p, dp, R, phi, divV, temp; // pressure ,x velocity, y velocity, pressure correction, residual, level set value
@@ -172,20 +178,17 @@ class qNode {
 		bool cvyValid[4];
 		double cvy[4];
 
-		qNode(qNode *p, int i, int j): parent(p), i(i), j(j) {
-			if (parent == NULL) {
-				level = 0;
-			} else {
-				level = 1 + parent->level;
-			}
+		kdNode(kdNode *p, int li, int lj, int i, int j): parent(p), level_i(li), level_j(lj), i(i), j(j) {
 			id = nodeId++;
 			leaf = true;
 			for (int i = 0; i < 4; i++) {
-				children[i] = NULL;
 				neighbors[i] = NULL;
 			}
+			children[0] = NULL;
+			children[1] = NULL;
+			splitDir = SPLIT_NONE;
 		}
-		~qNode() {
+		~kdNode() {
 			// set your neighbors' neighbor pointer at you to be null
 			
 			for (int i = 0; i < 2; i++) {
@@ -199,7 +202,7 @@ class qNode {
 				}
 			}
 			if (!leaf) {
-				for (int k = 0; k < 4; k++) {
+				for (int k = 0; k < 2; k++) {
 					delete children[k];
 				}
 			}
@@ -208,33 +211,123 @@ class qNode {
 		// moving around tree functions
 		void setChildrenNeighbors() {
 			// set both ways because the first time a node is expanded the other one may not have been
-			// children(i, j)
-			// (0, 0) (0, 1)
-			// (1, 0) (1, 1)
 			// deltas[k]= = {{1, 0}^, {-1, 0}v, {0, 1}>, {0, -1}<}
-			for (int i = 0; i < 2; i++) {
-				for (int j = 0; j < 2; j++) {
-					qNode* c = children[i * 2 + j];
-					// outside neighbor in x
-					c->neighbors[3-j] = NULL;
-					if (this->neighbors[3-j] != NULL
-							&& !this->neighbors[3-j]->leaf) {
-						c->neighbors[3-j] = this->neighbors[3-j]->children[2*i+(1-j)]; 
-						this->neighbors[3-j]->children[2*i+(1-j)]->neighbors[2+j] = c; 
-					}
-					// inside neighbor in x
-					c->neighbors[2+j] = this->children[2*i+(1-j)];
-					this->children[2*i+(1-j)]->neighbors[3-j] = c;
+			assert (splitDir != SPLIT_NONE);
 
-					// outside neighbor in y
-					c->neighbors[1-i] = NULL;
-					if (this->neighbors[1-i] != NULL && !this->neighbors[1-i]->leaf) {
-						c->neighbors[1-i] = this->neighbors[1-i]->children[(1-i)*2+j]; 
-						this->neighbors[1-i]->children[(1-i)*2+j]->neighbors[i] = c; 
-					}
-					// inside neighbor in y
-					c->neighbors[i] = this->children[(1-i)*2+j];
-					this->children[(1-i)*2+j]->neighbors[1-i] = c;
+			kdNode* n = NULL;
+
+			int size_i = 1<<level_i;
+			int size_j = 1<<level_j;
+			if (splitDir == SPLIT_X) {
+				// set inside neighbors in x to each other
+				children[0]->neighbors[2] = children[1];
+				children[1]->neighbors[3] = children[0];
+
+				// child 0 <
+				if (j != 0) {
+					n = this;
+					while (n->neighbors[3] == NULL) n = n->parent;
+					assert(n != NULL && n->neighbors[3] != NULL);
+					children[0]->neighbors[3] = n->neighbors[3]->get(children[0]->level_i, children[0]->level_j, children[0]->i, children[0]->j-1, false);
+					if (children[0]->neighbors[3] != NULL)
+						children[0]->neighbors[3]->neighbors[2] = children[0];
+				}
+				// child 1 >
+				if (j != size_j - 1) {
+					n = this;
+					while (n->neighbors[2] == NULL) n = n->parent;
+					assert(n != NULL && n->neighbors[2] != NULL);
+
+					children[1]->neighbors[2] = n->neighbors[2]->get(children[1]->level_i, children[1]->level_j, children[1]->i, children[1]->j+1, false);
+					if (children[1]->neighbors[2] != NULL)
+						children[1]->neighbors[2]->neighbors[3] = children[1];
+				}
+
+				// both v
+				if (i != 0) {
+					n = this;
+					while (n->neighbors[1] == NULL) n = n->parent;
+					assert (n != NULL && n->neighbors[1] != NULL);
+
+					children[0]->neighbors[1] = n->neighbors[1]->get(children[0]->level_i, children[0]->level_j, children[0]->i-1, children[0]->j, false);
+					if (children[0]->neighbors[1] != NULL)
+						children[0]->neighbors[1]->neighbors[0] = children[0];
+
+					children[1]->neighbors[1] = n->neighbors[1]->get(children[1]->level_i, children[1]->level_j, children[1]->i-1, children[1]->j, false);
+					if (children[1]->neighbors[1] != NULL)
+						children[1]->neighbors[1]->neighbors[0] = children[1];
+				}
+
+				// both ^
+				if (i != size_i - 1) {
+					n = this;
+					while (n->neighbors[0] == NULL) n = n->parent;
+					assert (n != NULL && n->neighbors[0] != NULL);
+
+					children[0]->neighbors[0] = n->neighbors[0]->get(children[0]->level_i, children[0]->level_j, children[0]->i+1, children[0]->j, false);
+					if (children[0]->neighbors[0] != NULL)
+						children[0]->neighbors[0]->neighbors[1] = children[0];
+
+					children[1]->neighbors[0] = n->neighbors[0]->get(children[1]->level_i, children[1]->level_j, children[1]->i+1, children[1]->j, false);
+					if (children[1]->neighbors[0] != NULL)
+						children[1]->neighbors[0]->neighbors[1] = children[1];
+
+				}
+			} else {
+				// set inside neighbors in y to each other
+				children[0]->neighbors[0] = children[1];
+				children[1]->neighbors[1] = children[0];
+
+				// child 0 v
+				if (i != 0) {
+					n = this;
+					while (n->neighbors[1] == NULL) n = n->parent;
+					assert (n != NULL && n->neighbors[1] != NULL);
+
+					children[0]->neighbors[1] = n->neighbors[1]->get(children[0]->level_i, children[0]->level_j, children[0]->i-1, children[0]->j, false);
+					if (children[0]->neighbors[1] != NULL)
+						children[0]->neighbors[1]->neighbors[0] = children[0];
+				}
+				// child 1 ^
+				if (i != size_i - 1) {
+					n = this;
+					while (n->neighbors[0] == NULL) n = n->parent;
+					assert (n != NULL && n->neighbors[0] != NULL);
+
+					children[1]->neighbors[0] = n->neighbors[0]->get(children[1]->level_i, children[1]->level_j, children[1]->i+1, children[1]->j, false);
+					if (children[1]->neighbors[0] != NULL)
+						children[1]->neighbors[0]->neighbors[1] = children[1];
+				}
+
+				// both <
+				if (j != 0) {
+					n = this;
+					while (n->neighbors[3] == NULL) n = n->parent;
+					assert (n != NULL && n->neighbors[3] != NULL);
+
+					children[0]->neighbors[3] = n->neighbors[3]->get(children[0]->level_i, children[0]->level_j, children[0]->i, children[0]->j-1, false);
+					if (children[0]->neighbors[3] != NULL)
+						children[0]->neighbors[3]->neighbors[2] = children[0];
+
+					children[1]->neighbors[3] = n->neighbors[3]->get(children[1]->level_i, children[1]->level_j, children[1]->i, children[1]->j-1, false);
+					if (children[1]->neighbors[3] != NULL)
+						children[1]->neighbors[3]->neighbors[2] = children[1];
+				}
+
+				// both >
+				if (j != size_j - 1) {
+					n = this;
+					while (n->neighbors[2] == NULL) n = n->parent;
+					assert (n != NULL && n->neighbors[2] != NULL);
+
+					children[0]->neighbors[2] = n->neighbors[2]->get(children[0]->level_i, children[0]->level_j, children[0]->i, children[0]->j-1, false);
+					if (children[0]->neighbors[2] != NULL)
+						children[0]->neighbors[2]->neighbors[3] = children[0];
+
+					children[1]->neighbors[2] = n->neighbors[2]->get(children[1]->level_i, children[1]->level_j, children[1]->i, children[1]->j-1, false);
+					if (children[1]->neighbors[2] != NULL)
+						children[1]->neighbors[2]->neighbors[3] = children[1];
+
 				}
 			}
 		}
@@ -248,27 +341,8 @@ class qNode {
 			assert(false);
 		}
 
-		double getValueInterpCorrection(qNode* original, int ml, int k, NodeValue v) {
-			int newk;
-			double dpos;
-			if (k < 2) {
-				// previously computing gradient in y direction, need x direction for interpolation
-				double origX = (original->j + 0.5)/(1<<original->level);
-				double x = (j + 0.5)/(1<<level);
-				dpos = origX - x;
-				newk = dpos > 0 ? 2 : 3;
-			} else {
-				double origY = (original->i + 0.5)/(1<<original->level); 
-				double y = (i + 0.5)/(1<<level);
-				dpos = origY - y;
-				newk = dpos > 0 ? 0 : 1;
-			}
-			double faceGrad = getFaceGradient(ml, newk, v);
-			return fabs(dpos) * faceGrad;
-		}
-
-		double getFaceGradient(int ml, int k, NodeValue v) {
-			qNode* n = this;
+		/*double getFaceGradient(int ml, int k, NodeValue v) {
+			kdNode* n = this;
 			int oppositeK = (k < 2) ? 1-k : 3-(k%2);//1 - (k%2);
 			while (n != NULL && n->neighbors[k] == NULL) n = n->parent;
 			if (n != NULL) {
@@ -276,46 +350,138 @@ class qNode {
 			} else {
 				return 0;
 			}
+		}*/
+
+		double getValueInterpCorrection(kdNode* original, int ml, int k, NodeValue v, int left) {
+			int newk;
+			double dpos;
+			if (k < 2) {
+				// previously computing gradient in y direction, need x direction for interpolation
+				double origX = (original->j + 0.5)/(1<<original->level_j);
+				double x = (j + 0.5)/(1<<level_j);
+				dpos = origX - x;
+				newk = dpos > 0 ? 2 : 3;
+			} else {
+				double origY = (original->i + 0.5)/(1<<original->level_i); 
+				double y = (i + 0.5)/(1<<level_i);
+				dpos = origY - y;
+				newk = dpos > 0 ? 0 : 1;
+			}
+			double faceGrad = getFaceGradient(ml, newk, v, left-1);
+			return fabs(dpos) * faceGrad;
 		}
 
-		double addFaceToGradient(qNode* original, int ml, int k, NodeValue v) {
-			if (leaf || level == ml) {
-				int origSize = 1<<original->level;
-				int size = 1<<level;
-				double dside = fmin(1.0/origSize, 1.0/size);
-				double h = 0.5/origSize + 0.5/size;
-				double d = (dside * origSize)/h;
-				double val = getVal(v);
-				if (pressureInterp && original->level > level) {
-					val += getValueInterpCorrection(original, ml, k, v);
+		kdNode* getChildInDir(int targetCoord, int targetLevel, int k) {
+			if (k < 2) {
+				// in y, going off x level + coord
+				if (level_j == targetLevel) {
+					assert (targetCoord ==  j);
+					return this;
 				}
-				
-				return (val - original->getVal(v)) * d;
+				assert (level_j < targetLevel);
+				if (leaf) {
+					return this;
+				} else if (splitDir == SPLIT_X) {
+					// choose correct one
+					int leveldif = targetLevel - level_j;
+					int midcoord = (1<<leveldif)*j + (1<<(leveldif - 1));
+					int index = (targetCoord < midcoord) ? 0 : 1;
+					return children[index]->getChildInDir(targetCoord, targetLevel, k);
+				} else {
+					return children[1-(k%2)]->getChildInDir(targetCoord, targetLevel, k);
+				}
+			} else {
+				// in x, going off y level + coord
+				if (level_i == targetLevel) {
+					assert (targetCoord ==  i);
+					return this;
+				}
+				assert (level_i < targetLevel);
+				if (leaf) {
+					return this;
+				} else if (splitDir == SPLIT_Y) {
+					// choose correct one
+					int leveldif = targetLevel - level_i;
+					int midcoord = (1<<leveldif)*i + (1<<(leveldif - 1));
+					int index = (targetCoord < midcoord) ? 0 : 1;
+					return children[index]->getChildInDir(targetCoord, targetLevel, k);
+				} else {
+					return children[1-(k%2)]->getChildInDir(targetCoord, targetLevel, k);
+				}
+
+			}
+		}
+
+		kdNode* getNeighborInDir(int targetCoord, int targetLevel, int k) {
+			kdNode* n = this;
+			int oppositeK = (k < 2) ? 1-k : 3-(k%2);//1 - (k%2);
+			while (n != NULL && n->neighbors[k] == NULL) n = n->parent;
+			if (n != NULL) {
+				int newi = i + deltas[k][0];
+				int newj = j + deltas[k][1];
+				n = n->neighbors[k]->getChildInDir(targetCoord, targetLevel, oppositeK);
+			}
+			return n;
+		}
+
+		double getFaceGradient(int ml, int k, NodeValue v) {
+			return getFaceGradient(ml, k, v, levels);
+		}
+
+		double getFaceGradient(int ml, int k, NodeValue v, int left) {
+			int oppositeK = (k < 2) ? 1-k : 3-(k%2);//1 - (k%2);
+			int targetLevel = (k < 2 ? level_j : level_i);
+			int targetCoord = (k < 2 ? j : i);
+			kdNode* n = getNeighborInDir(targetCoord, targetLevel, k);
+			if (n == NULL) {
+				return 0;
+			} else {
+				return n->addFaceToGradient(this, ml, oppositeK, v, left);
+			}
+
+		}
+
+		double addFaceToGradient(kdNode* original, int ml, int k, NodeValue v, int left) {
+			if (leaf || (level_i+level_j) == ml) {
+				int horig = 1<< (k < 2 ? original->level_i : original->level_j);
+				int hn = 1<< (k < 2 ? level_i : level_j);
+				double h = 0.5/horig + 0.5/hn;
+
+				//printf("Adding node with pressure %f to face gradient of node with pressure %f\n", getVal(v), original->getVal(v));
+
+				int origLevel = (k < 2 ? original->level_j : original->level_i);
+				int thisLevel = (k < 2 ? level_j : level_i);
+				double val = getVal(v);
+				if (pressureInterp && origLevel > thisLevel && left > 0) {
+					val += getValueInterpCorrection(original, ml, k, v, left);
+				}
+
+				return (val - original->getVal(v))/h;
 			} else {
 				double total = 0.0;
-				if (k < 2) { // y dir
-					int targetI = 1 - k;
-					for (int j = 0; j < 2; j++) {
-						total += children[targetI*2+j]->addFaceToGradient(original, ml, k, v);
-					}
+				if ((k < 2 && splitDir == SPLIT_X) || (k >= 2 && splitDir == SPLIT_Y)) {
+					total += children[0]->addFaceToGradient(original, ml, k, v, left);
+					total += children[1]->addFaceToGradient(original, ml, k, v, left);
+					total /= 2.0;
 				} else {
-					int targetJ = 3 - k;
-					for (int i = 0; i < 2; i++) {
-						total += children[2*i+targetJ]->addFaceToGradient(original, ml, k, v);
-					}
+					total += children[1-(k%2)]->addFaceToGradient(original, ml, k, v, left);
 				}
 				return total;
 			}
-
 		}
 
 		void getLaplacian(int ml, double *aSum, double* bSum, NodeValue v) {
 			for (int k = 0; k < 4; k++) {
 				int oppositeK = (k < 2) ? 1-k : 3-(k%2); //1 - (k%2);
-				qNode* n = this;
-				while (n != NULL && n->neighbors[k] == NULL) n = n->parent;
+				int targetLevel = (k < 2 ? level_j : level_i);
+				int targetCoord = (k < 2 ? j : i);
+				kdNode* n = getNeighborInDir(targetCoord, targetLevel, k);
+			
 				if (n != NULL) {
-					n->neighbors[k]->addFaceToLaplacian(this, ml, oppositeK, aSum, bSum, v);
+					
+					int newi = i + deltas[k][0];
+					int newj = j + deltas[k][1];
+					n->addFaceToLaplacian(this, ml, oppositeK, aSum, bSum, v);
 				} else {
 					*aSum -= 1;
 					*bSum += getVal(v);
@@ -324,32 +490,35 @@ class qNode {
 		}
 
 		// note: k is opposite of way used to get there, for example if k in original was (1, 0), this k is (-1, 0)
-		void addFaceToLaplacian(qNode* original, int ml, int k, double* aSum, double* bSum, NodeValue v) {
-			if (leaf || level == ml) {
-				int origSize = 1<<original->level;
-				int size = 1<<level;
-				double dside = fmin(1.0/origSize, 1.0/size);
-				double h = 0.5/origSize + 0.5/size;
+		void addFaceToLaplacian(kdNode* original, int ml, int k, double* aSum, double* bSum, NodeValue v) {
+			if (leaf || (level_i + level_j) == ml) {
+				int horig = 1<< (k < 2 ? original->level_i : original->level_j);
+				int hn = 1<< (k < 2 ? level_i : level_j);
+				double h = 0.5/horig + 0.5/hn;
+
+				double worig = 1 << (k < 2 ? original->level_j : original->level_i);
+				double wn = 1 << (k < 2 ? level_j : level_i);
+				double dside = fmin(1.0/worig, 1.0/wn);
+
 				double d = dside/h;
+
+				int origLevel = (k < 2 ? original->level_j : original->level_i);
+				int thisLevel = (k < 2 ? level_j : level_i);
 				double val = getVal(v);
-				if (pressureInterp && original->level > level) {
-					val += getValueInterpCorrection(original, ml, k, v);
+				if (pressureInterp && origLevel > thisLevel) {
+					val += getValueInterpCorrection(original, ml, k, v, levels);
 				}
 
 
 				*aSum -= d;
 				*bSum += d*val;
+				//printf("adding node with pressure %f to laplacian of node with pressure %f\n", getVal(v), original->getVal(v));
 			} else {
-				if (k < 2) { // y dir
-					int targetI = 1 - k;
-					for (int j = 0; j < 2; j++) {
-						children[targetI*2+j]->addFaceToLaplacian(original, ml, k, aSum, bSum, v);
-					}
+				if ((k < 2 && splitDir == SPLIT_X) || (k >= 2 && splitDir == SPLIT_Y)) {
+					children[0]->addFaceToLaplacian(original, ml, k, aSum, bSum, v);
+					children[1]->addFaceToLaplacian(original, ml, k, aSum, bSum, v);
 				} else {
-					int targetJ = 3 - k;
-					for (int i = 0; i < 2; i++) {
-						children[2*i+targetJ]->addFaceToLaplacian(original, ml, k, aSum, bSum, v);
-					}
+					children[1-(k%2)]->addFaceToLaplacian(original, ml, k, aSum, bSum, v);
 				}
 			}
 		}
@@ -357,7 +526,7 @@ class qNode {
 		// utility functions
 		std::pair<double, double> getValueGradient(NodeValue v) {
 			
-			int ml = leaf ? levels - 1 : level;
+			int ml = leaf ? totalLevels : level_i + level_j;
 			std::pair<double, double> newGrad =  std::make_pair((getFaceGradient(ml, 2, v) - getFaceGradient(ml, 3, v))/2.0, (getFaceGradient(ml, 0, v) - getFaceGradient(ml, 1, v))/2.0);
 
 			return newGrad;
@@ -365,20 +534,21 @@ class qNode {
 		
 		// curl(F) = d(Fy)/dx - d(Fx)/dy
 		double getCurl() {
-			 //TODO fix
 			double y1 = (cvy[0] + cvy[2])/2.0;
 			double y2 = (cvy[1] + cvy[3])/2.0;
 			double x1 = (cvx[0] + cvx[1])/2.0;
 			double x2 = (cvx[2] + cvx[3])/2.0;
-			int size = 1<<level;
-			return  -(x2-x1)/size + (y2-y1)/size;
+			int size_i = 1<<level_i;
+			int size_j = 1<<level_j;
+			return  -(x2-x1)/size_j + (y2-y1)/size_i;	
 		}
 
 		void computeVelocityDivergence() {
 			//std::pair<double, double> grad = getVelocityGradient();
 			//divV = grad.first + grad.second;
 			if (leaf) {
-				int size = 1<<level;
+				int size_i = 1<<level_i;
+				int size_j = 1<<level_j;
 				double a, b;
 
 				// x
@@ -386,42 +556,42 @@ class qNode {
 					a = 0.0;
 				else
 					a = vx;
-				if (j == size - 1)
+				if (j == size_j - 1)
 					b = 0.0;
 				else {
 					b = vx2;
 				}
-				divV = b-a;
+				divV = (b-a) * size_j;
 
 				// y
 				if (i == 0)
 					a = 0.0;
 				else
 					a = vy;
-				if (i == size-1)
+				if (i == size_i-1)
 					b = 0.0;
 				else {
 					b = vy2;
 				}
-				divV += b-a;
-
-				divV *= size;
+				divV += (b-a)*size_i;
 			} else {
 				divV = 0.0;
-				for (int k = 0; k < 4; k++) {
+				for (int k = 0; k < 2; k++) {
 					children[k]->computeVelocityDivergence();
 				}
 			}
 		}
 
-		std::pair<double, double> getVelocityAt(double x, double y) {
-			int size = 1<<level;
-			double minX = ((float)j)/size;
-			double minY = ((float)i)/size;
-			assert (!(x < minX || y < minY || x > minX + 1.0/size || y > minY + 1.0/size));
-			double dj = (x*size)-j;
-			double di = (y*size)-i;
+		std::pair<double, double> getVelocityAt(kdNode* r, double x, double y) {
+			int size_i = 1<<level_i;
+			int size_j = 1<<level_j;
+			double minX = ((float)j)/size_j;
+			double minY = ((float)i)/size_i;
+			assert (!(x < minX || y < minY || x > minX + 1.0/size_j || y > minY + 1.0/size_i));
 
+			double dj = (x*size_j)-j;
+			double di = (y*size_i)-i;
+			
 			double newvx = bilinearInterpolation(cvx[0], cvx[1], cvx[2], cvx[3], di, dj);
 			double newvy = bilinearInterpolation(cvy[0], cvy[1], cvy[2], cvy[3], di, dj);	
 			return std::make_pair(newvx, newvy);
@@ -437,446 +607,160 @@ class qNode {
 			else if (v == DP)
 				val = dp;
     		std::pair<double, double> grad = getValueGradient(v);
-			int size = 1<<level;
-			double dx = x - (j + 0.5)/size;
-			double dy = y - (i + 0.5)/size;
-			if (fabs(dx) > 0.5/size || fabs(dy) > 0.5/size) {
+			int size_i = 1<<level_i;
+			int size_j = 1<<level_j;
+			double dx = x - (j + 0.5)/size_j;
+			double dy = y - (i + 0.5)/size_i;
+			if (fabs(dx) > 0.5/size_j || fabs(dy) > 0.5/size_i) {
 				printf("dx: %f, dy: %f\n", dx, dy);
 			}
 			return val + dx * grad.first + dy * grad.second;
 		}
 
 		// adaptivity
-		void expand(bool calculateNewVals) {
-			assert(leaf);
-    		int size = 1<<level;
-    		for (int k = 0; k < 4; k++) {
-				this->children[k] = new qNode(this, 2*i+(k/2), 2*j+(k%2));
+		void expand(bool calculateNewVals, SplitDir dir) {
+			assert (leaf);
+			assert (dir != SPLIT_NONE);
+	
+			leaf = false;
+			splitDir = dir;
+
+			// TODO
+    		//printf("expanding cell %d, (%d, %d)\n", level, i, j);
+    		int size_i = 1<<level_i;
+    		int size_j = 1<<level_j;
+    		// std::pair<double	, double> levelSetGrad;
+			if (dir == SPLIT_X) {
+	    		for (int k = 0; k < 2; k++) {
+					children[k] = new kdNode(this, level_i, level_j + 1, i, 2*j + k);
+    			}
+				if (calculateNewVals) {
+					children[0]->cvx[0] = cvx[0];
+					children[0]->cvy[0] = cvy[0];
+					children[0]->cvx[2] = cvx[2];
+					children[0]->cvy[2] = cvy[2];
+					children[1]->cvx[1] = cvx[1];
+					children[1]->cvy[1] = cvy[1];
+					children[1]->cvx[3] = cvx[3];
+					children[1]->cvy[3] = cvy[3];
+					double newv = (cvx[0] + cvx[1])/2.0;
+					children[0]->cvx[1] = newv;
+					children[1]->cvx[0] = newv;
+					newv = (cvy[0] + cvy[1])/2.0;
+					children[0]->cvy[1] = newv;
+					children[1]->cvy[0] = newv;
+					newv = (cvx[2] + cvx[3])/2.0;
+					children[0]->cvx[3] = newv;
+					children[1]->cvx[2] = newv;
+					newv = (cvy[2] + cvy[3])/2.0;
+					children[0]->cvy[3] = newv;
+					children[1]->cvy[2] = newv;
+				}
+			} else {
+				for (int k = 0; k < 2; k++) {
+					children[k] = new kdNode(this, level_i + 1, level_j, 2*i + k, j);	
+				}
+				if (calculateNewVals) {
+					children[0]->cvx[0] = cvx[0];
+					children[0]->cvy[0] = cvy[0];
+					children[0]->cvx[1] = cvx[1];
+					children[0]->cvy[1] = cvy[1];
+					children[1]->cvx[2] = cvx[2];
+					children[1]->cvy[2] = cvy[2];
+					children[1]->cvx[3] = cvx[3];
+					children[1]->cvy[3] = cvy[3];
+					double newv = (cvx[0] + cvx[2])/2.0;
+					children[0]->cvx[2] = newv;
+					children[1]->cvx[0] = newv;
+					newv = (cvy[0] + cvy[2])/2.0;
+					children[0]->cvy[2] = newv;
+					children[1]->cvy[0] = newv;
+					newv = (cvx[1] + cvx[3])/2.0;
+					children[0]->cvx[3] = newv;
+					children[1]->cvx[1] = newv;
+					newv = (cvy[1] + cvy[3])/2.0;
+					children[0]->cvy[3] = newv;
+					children[1]->cvy[1] = newv;
+				}
 			}
 			if (calculateNewVals) {
-
-				// p will be changed later anyway
-
-
-				for (int c = 0; c < 4; c++) {
-					children[c]->cvx[c] = cvx[c];
-					children[c]->cvy[c] = cvy[c];
-					children[c]->p = p;
-				}
-				
-				double newv;
-				// neg x node, compute y
-				newv = (cvy[0] + cvy[2])/2.0;
-				children[0]->cvx[2] = vx;
-				children[0]->cvy[2] = newv;
-				children[2]->cvx[0] = vx;
-				children[2]->cvy[0] = newv;
-
-				// pos x node, compute y
-				newv = (cvy[1] + cvy[3])/2.0;
-				children[1]->cvx[3] = vx2;
-				children[1]->cvy[3] = newv;
-				children[3]->cvx[1] = vx2;
-				children[3]->cvy[1] = newv;
-
-				// neg y node, compute x
-				newv = (cvx[0] + cvx[1])/2.0;
-				children[0]->cvx[1] = newv;
-				children[0]->cvy[1] = vy;
-				children[1]->cvx[0] = newv;
-				children[1]->cvy[0] = vy;
-
-				// neg y node, compute x
-				newv = (cvx[2] + cvx[3])/2.0;
-				children[2]->cvx[3] = newv;
-				children[2]->cvy[3] = vy2;
-				children[3]->cvx[2] = newv;
-				children[3]->cvy[2] = vy2;
-
-				// center
-				newv = (vx + vx2)/2.0;
-				children[0]->cvx[3] = newv;
-				children[1]->cvx[2] = newv;
-				children[2]->cvx[1] = newv;
-				children[3]->cvx[0] = newv;
-
-				newv = (vy + vy2)/2.0;
-				children[0]->cvy[3] = newv;
-				children[1]->cvy[2] = newv;
-				children[2]->cvy[1] = newv;
-				children[3]->cvy[0] = newv;
-
-				// compute new face velocities from nodes
-				for (int k = 0; k < 4; k++) {
+				for (int k = 0; k < 2; k++) {
+					children[k]->p = p;
 					children[k]->vx = (cvx[0] + cvx[2])/2.0;
 					children[k]->vx2 = (cvx[1] + cvx[3])/2.0;
 					children[k]->vy = (cvy[0] + cvy[1])/2.0;
 					children[k]->vy2 = (cvy[2] + cvy[3])/2.0;
 				}
-
 			}
-    		
 			setChildrenNeighbors();
-			leaf = false;
-		}
-
-		void getNodalSide(int ni, int nj, int* retL, double* retV, bool x, bool left, int targetLevel) {
-			int leveldif = targetLevel - level;
-			int maxi = i * (1<<leveldif);
-			int maxj = j * (1<<leveldif);
-		
-			if (leaf) {
-				if (*retL >= level) return;
-				if (!((ni == maxi || ni == maxi + (1<<leveldif)) && (nj == maxj || nj == maxj + (1<<leveldif)))) return;
-				if (x) {
-					if (ni == maxi && left) return;
-					if (ni != maxi && !left) return;
-					*retL = level;
-					if (nj == maxj)
-						*retV = vx;
-					else
-						*retV = vx2;
-				} else {
-					if (nj == maxj && left) return;
-					if (nj != maxj && !left) return;
-					*retL = level;
-					if (ni == maxi)
-						*retV = vy;
-					else
-						*retV = vy2;
-				}
-				return;
-			}
-
-			int middist = 1<<(leveldif-1);
-			int midi = i * (1<<leveldif) + middist;
-			int midj = j * (1<<leveldif) + middist;
-			
-			if (ni != midi && nj != midj) {
-				int newi = (ni < midi) ? 0 : 1;
-				int newj = (nj < midj) ? 0 : 1;
-				children[2*newi+newj]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);
-			} else if (ni != midi) {
-				// j is on mid
-				assert (nj == midj);
-				if (x) {
-					if (ni > midi) {
-						for (int k = 2; k < 4; k++)
-							children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);	
-					} else {
-						for (int k = 0; k < 2; k++)
-							children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);		
-					}
-				} else {
-					// call it on 1 child
-					int newi = (ni < midi) ? 0 : 1;
-					int newj = (left) ? 0 : 1;
-					children[2*newi+newj]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);	
-				}
-			} else if (nj != midj) {
-				assert (ni == midi);
-				if (!x) {
-					if (nj > midj) {
-						for (int k = 1; k < 4; k+=2)
-							children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);	
-					} else {
-						for (int k = 0; k < 4; k+=2)
-							children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);		
-					}
-				} else {
-					int newj = (nj < midj) ? 0 : 1;
-					int newi = (left) ? 0  : 1;
-					children[2*newi + newj]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);
-				}
-
-			} else {
-				if (x && left) {
-					for (int k = 0; k < 2; k++)
-						children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);
-				} else if (x && !left) {
-					for (int k = 2; k < 4; k++)
-						children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);
-				} else if (!x && left) {
-					for (int k = 0; k < 4; k += 2)
-						children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);
-				} else {
-					for (int k = 1; k < 4; k += 2)
-						children[k]->getNodalSide(ni, nj, retL, retV, x, left, targetLevel);
-				}
-			}
-		}
-
-		bool getArtificialValue(int ni, int nj, int nl, bool x, bool left, double* retV) {
-			if (leaf) {
-				// compute value here
-
-				int leveldif = nl - level;
-				double delta = .5/(1<<leveldif);
-				double va, vb, vc, vd;
-				double di, dj;
-				di = (((double)ni)/(1<<nl) - ((double)i)/(1<<level)) * (1<<level);
-				dj = (((double)nj)/(1<<nl) - ((double)j)/(1<<level)) * (1<<level);
-				if (!x) {
-					if (left) {
-						assert (dj >= .5);
-						// right side of cell
-						if (!cvyValid[1] || !cvyValid[3]) return false;
-						va = vy;
-						vb = cvy[1];
-						vc = vy2;
-						vd = cvy[3];
-						dj -= delta;
-						dj -= .5;
-					} else {
-						assert (dj <= .5);
-						// left side of cell
-						if (!cvyValid[0] || !cvyValid[2]) return false;
-						va = cvy[0];
-						vb = vy;
-						vc = cvy[2];
-						vd = vy2;
-						dj += delta;
-					}
-					dj *= 2.0;
-				} else {
-					if (left) {
-						assert (di >= .5);
-						// bottom side of cell
-						if (!cvxValid[2] || !cvxValid[3]) return false;
-						va = vx;
-						vb = vx2;
-						vc = cvx[2];
-						vd = cvx[3];
-						di -= delta;
-						di -= .5;
-					} else {
-						// top side of cell
-						assert (di <= .5);
-						if (!cvxValid[0] || !cvxValid[1]) return false;
-						va = cvx[0];
-						vb = cvx[1];
-						vc = vx;
-						vd = vx2;
-						di += delta;
-					}
-					di *= 2.0;
-				}
-				*retV = bilinearInterpolation(va, vb, vc, vd, di, dj);
-				return true;
-			} else {
-				int leveldif = nl - level;
-				int midi = i * (1<<leveldif) + (1<<(leveldif-1));
-				int midj = j * (1<<leveldif) + (1<<(leveldif-1));
-				assert (ni != midi || nj != midj); // otherwise we wouldn't be artificially discretizing
-				int nexti, nextj;
-				if (ni < midi)
-					nexti = 0;
-				else if (ni > midi)
-					nexti = 1;
-				else
-					nexti = (left) ? 0 : 1;
-				if (nj < midj)
-					nextj = 0;
-				else if (nj > midj)
-					nextj = 1;
-				else
-					nextj = (left) ? 0 : 1;
-				return children[nexti*2+nextj]->getArtificialValue(ni, nj, nl, x, left, retV);
-			}
-		}
-
-		// attempts to compute the given nodal value. If successful, it returns true with the value in ret, otherwise it returns false.
-		bool attemptComputeNodalValue(qNode* r, int c, bool x, double* ret) {
-			int ci = (c/2);
-			int cj = (c%2);
-			int ni = i + ci;
-			int nj = j + cj;
-			int size = 1<<level;
-			// handle edge cases differently
-			if (x) {
-				if (nj == 0 || nj == size) {
-					*ret = 0;
-					return true;
-				}
-				if (ni == 0 || ni == size) {
-					//*ret = (cj == 0) ? vx : vx2;
-					bool left = (ni == size);
-					int leveldif = levels - 1 - level;
-					int garbage = -1;
-					r->getNodalSide(ni * (1<<leveldif), nj * (1<<leveldif), &garbage, ret, x, left, levels - 1);
-					return true;	
-				}
-			} else {
-				if (ni == 0 || ni == size) {
-					*ret = 0;
-					return true;	
-				}
-				if (nj == 0 || nj == size) {
-					bool left = (nj == size);
-					int leveldif = levels - 1 - level;
-					int garbage = -1;
-					r->getNodalSide(ni * (1<<leveldif), nj * (1<<leveldif), &garbage, ret, x, left, levels - 1);
-					return true;
-				}
-
-			}
-			int levelL, levelR;
-			levelL = -1;
-			levelR = -1;
-			double valL, valR;
-			bool haveL, haveR;
-			int leveldif = levels - 1 - level;
-			r->getNodalSide(ni * (1<<leveldif), nj * (1<<leveldif), &levelL, &valL, x, true, levels - 1);
-			haveL = levelL != -1;
-			r->getNodalSide(ni * (1<<leveldif), nj * (1<<leveldif), &levelR, &valR, x, false, levels - 1);
-			haveR = levelR != -1;
-			bool left = false;
-			if (haveR && haveL) {
-				double lenL = .5/(1<<levelL);
-				double lenR = .5/(1<<levelR);
-				double totalLen = lenL + lenR;
-				*ret = lenR*valL/totalLen + lenL*valR/totalLen;
-				return true;
-			} else if (haveR) {
-				valL = valR;
-				levelL = levelR;
-				left = true;
-				haveL = true;
-			}
-			assert (haveL);
-			assert (levelL >= level);
-			leveldif = levelL - level;
-			if (r->getArtificialValue(ni * (1<<leveldif), nj * (1<<leveldif), levelL, x, left, &valR)) {
-				*ret = (valR + valL)/2.0;
-				return true;
-			}
-			return false;
-		}
-
-		// returns the number of nodal values left to compute
-		int attemptComputeNodalVals(qNode* r) {
-			int total = 0;
-			if (leaf) {
-				// do stuff
-
-				double v;
-				for (int c = 0; c < 4; c++) {
-					if (!cvxValid[c] && attemptComputeNodalValue(r, c, true, &v)) {
-						cvxValid[c] = true;
-						cvx[c] = v;
-						if (v > 0)
-							printf("(%d)[%d][%d] node %d x: %f\n", level, i, j, c, cvx[c]);
-					}
-					if (!cvyValid[c] && attemptComputeNodalValue(r, c, false, &v)) {
-						cvyValid[c] = true;
-						cvy[c] = v;
-						if (v > 0)
-							printf("(%d)[%d][%d] node %d y: %f\n", level, i, j, c, cvy[c]);
-					}
-				}
-
-				// return stuff				
-				for (int c = 0; c < 4; c++) {
-					if (!cvxValid[c]) total++;
-					if (!cvyValid[c]) total++;
-				}
-				return total;
-			} else {
-				for (int k = 0; k < 4; k++) {
-					total += children[k]->attemptComputeNodalVals(r);
-					if (!cvxValid[k] && children[k]->cvxValid[k]) {
-						cvx[k] = children[k]->cvx[k];
-						cvxValid[k] = true;
-					}
-					if (!cvyValid[k] && children[k]->cvyValid[k]) {
-						cvy[k] = children[k]->cvy[k];
-						cvyValid[k] = true;
-					}
-				}
-				return total;
-			}
-		}
-
-		void invalidateNodalValues() {
-			for (int c = 0; c < 4; c++) {
-				cvxValid[c] = false;
-				cvyValid[c] = false;
-			}
-			if (!leaf) {
-				for (int k = 0; k < 4; k++) {
-					children[k]->invalidateNodalValues();
-				}
-			}
-		}
-
-		void computeVelFromChildren() {
-			assert (!leaf);
-			vx = (children[0]->vx + children[2]->vx)/2.0;
-			vx2 = (children[1]->vx2 + children[3]->vx2)/2.0;
-			vy = (children[0]->vy + children[1]->vy)/2.0;
-			vy2 = (children[2]->vy2 + children[3]->vy2)/2.0;
 		}
 
 		// don't need to average values since adapt function takes care of that
-		void contract(bool calculateNewVals) {
-			assert(!leaf);
-			for (int k = 0; k < 4; k++) {
+		void contract() {
+			assert (!leaf);
+			assert (splitDir != SPLIT_NONE);
+			for (int k = 0; k < 2; k++) {
 				assert(children[k]->leaf);
 			}
-			if (calculateNewVals) {
-				computeVelFromChildren();
-				p = 0;
-				for (int k = 0; k < 4; k++) {
-					p += children[k]->p;
-				}
-				p /= 4.0;
-			}
 		    //printf("contracting cell %d (%d, %d)\n", level, i, j);
-			for (int k = 0; k < 4; k++) {
+			for (int k = 0; k < 2; k++) {
 				delete children[k];
 			}
 			leaf = true;
+			splitDir = SPLIT_NONE;
 		}
 		void profile() {
 			numNodes++;
 			if (leaf) {
 				numLeaves++;
-				leafLevels[level]++;
+				leafLevels[level_i+level_j]++;
 			} else {
-				for (int k = 0; k < 4; k++) {
+				for (int k = 0; k < 2; k++) {
 					children[k]->profile();
 				}
 			}
 		}
 
-		// current node, target d/i/j
+		// current node, target li/lj/ni/nj
 		
-		qNode* get(int nd, int ni, int nj) {
-			if (leaf) return this;
-			int leveldif = nd - level;
-			int midsize = 1<<(leveldif-1);
-			int midi = i*(1<<leveldif) + midsize;
-			int midj = j*(1<<leveldif) + midsize;
-			int newi = (ni < midi) ? 0 : 1;
-			int newj = (nj < midj) ? 0 : 1;
-			return children[newi*2+newj]->get(nd, ni, nj);
+		kdNode* get(int li, int lj, int ni, int nj, bool allowEarly) {
+			if (li == level_i && lj == level_j && ni == i && nj == j) {
+				return this;
+			}
+			if (leaf) {
+				return allowEarly ? this : NULL;
+			}
+			assert (splitDir != SPLIT_NONE);
+			if (splitDir == SPLIT_X) {
+				int leveldif = lj - level_j;
+				int midsize = 1<<(leveldif - 1);
+				int midj = j*(1<<leveldif) + midsize;
+				int index = (nj < midj) ? 0 : 1;
+				return children[index]->get(li, lj, ni, nj, allowEarly);
+			} else {
+				int leveldif = li - level_i;
+				int midsize = 1<<(leveldif - 1);
+				int midi = i*(1<<leveldif) + midsize;
+				int index = (ni < midi) ? 0 : 1;
+				return children[index]->get(li, lj, ni, nj, allowEarly);
+			}
 		}	
 };
 
 
-qNode* root;
-qNode* oldRoot;
+kdNode* root;
+kdNode* oldRoot;
 
 
 // debugging
 
-qNode* getLeaf(qNode* node, double x, double y, int ml) {
+kdNode* getLeaf(kdNode* node, double x, double y, int ml) {
+	// TODO
+	assert (false);
+	/*
 	int size = 1<<node->level;
 	assert (x >= (node->j + 0.0)/size && x <= (node->j + 1.0)/size);
 	assert (y >= (node->i + 0.0)/size && y <= (node->i + 1.0)/size);
-	/*if (x*size < node->j || x*size > node->j + 1 || y*size < node->i || y*size > node->i + 1) {
-		printf("out of range!\n");
-	}*/
 	if (node->leaf || node->level == ml) {
 		return node;
 	}
@@ -885,31 +769,29 @@ qNode* getLeaf(qNode* node, double x, double y, int ml) {
 	int newj = x < midx ? 0 : 1;
 	int newi = y < midy ? 0 : 1;
 	return getLeaf(node->children[2*newi + newj], x, y, ml);
+	*/
 }
 
-qNode*  getSemiLagrangianLookback(qNode* r, double* x, double* y, int steps, int ml, double vx, double vy) {
-	//printf("starting SL velocity: %f, %f\n",vx, vy);
+/*kdNode*  getSemiLagrangianLookback(kdNode* r, double* x, double* y, int steps, int ml) {
 	double newdt = dt / steps;
-	qNode* cur;
-	while (steps--) {	
-		*x -= vx * newdt;
-		*y -= vy * newdt;
+	kdNode* cur = getLeaf(r, *x, *y, ml);
+	while (steps--) {
+		std::pair<double, double> vel = cur->getVelocityAt(r, *x, *y);
+		*x -= vel.first * newdt;
+		*y -= vel.second * newdt;
 		*x = fmin(1.0, fmax(0, *x));
 		*y = fmin(1.0, fmax(0, *y));
 		cur = getLeaf(r, *x, *y, ml);
-		std::pair<double, double> vel = cur->getVelocityAt(*x, *y);
-		vx = vel.first;
-		vy = vel.second;
 	}
 	return cur;
-}
+}*/
 
 // not fast but who cares
 void printValue(NodeValue v) {
 	int size = 1<<(levels - 1);
 	for (int i = 0; i < size; i++) {
 		for (int j = 0; j < size; j++) {
-			qNode* n = root->get(levels - 1, i, j);
+			kdNode* n = root->get(levels, levels, i, j, true);
 			if (n != NULL) {
 				printf(" %.4f", n->getVal(v));
 			} else {
@@ -926,13 +808,14 @@ void initGL() {
    glClearColor(0.0f, 0.0f, 0.0f, 1.0f); // Black and opaque
 }
 
-void drawMultilevel(qNode* node, int ml) {
-	assert (node->level <= ml);
-	int size = 1 << node->level;
-	if (node->level == ml || node->leaf) {
+void drawMultilevel(kdNode* node, int ml) {
+	assert (node->level_i + node->level_j <= ml);
+	int size_i = 1 << node->level_i;
+	int size_j = 1 << node->level_j;
+	if (node->level_i + node->level_j == ml || node->leaf) {
 		// draw it
-		double x = -1.0 + (2.0 * node->j)/size;
-		double y = -1.0 + (2.0 * node->i)/size;
+		double x = -1.0 + (2.0 * node->j)/size_j;
+		double y = -1.0 + (2.0 * node->i)/size_i;
 
 		if (water) {
 			if (node->phi >= 0) {
@@ -952,7 +835,7 @@ void drawMultilevel(qNode* node, int ml) {
 			glColor3f(redPercent, 0, bluePercent);
 		}
 
-		glRectf(x, y, x + 2.0/size, y + 2.0/size);
+		glRectf(x, y, x + 2.0/size_j, y + 2.0/size_i);
 
 		if (drawVelocity) {
 			if (maxMag >= eps) {
@@ -962,51 +845,54 @@ void drawMultilevel(qNode* node, int ml) {
 				double mag = sqrt(vx*vx + vy*vy);
 				if (mag >= eps) {
 					glBegin(GL_LINES);
+					// max size is 1.0/side length, scaled by the max magnitude
 
-					double scale  = maxMag  * size;
+					double scale = maxMag * std::min(size_j, size_i);
+
 					// vx
-					glVertex2f(x, y + 1.0/size); 
-					glVertex2f(x + vx / scale, y + 1.0/size);
+					glVertex2f(x, y + 1.0/size_i);
+					glVertex2f(x + vx / scale, y + 1.0/size_i);
 
-					//vy
-					glVertex2f(x + 1.0/size, y);
-					glVertex2f(x + 1.0/size, y + vy / scale);
+					// vy
+					glVertex2f(x + 1.0/size_j, y);
+					glVertex2f(x + 1.0/size_j, y + vy / scale);
 
 					glEnd();
-
 				}
 			}
 		}
 		// draw cell
-		if (drawCells && node->level <= 8) {
+		if (drawCells) {
 			glColor3f(1.0, 1.0, 1.0);
 			glBegin(GL_LINE_LOOP);
 			glVertex2f(x, y);
-			glVertex2f(x, y + 2.0/size);
-			glVertex2f(x + 2.0/size, y + 2.0/size);
-			glVertex2f(x + 2.0/size, y);
+			glVertex2f(x, y + 2.0/size_i);
+			glVertex2f(x + 2.0/size_j, y + 2.0/size_i);
+			glVertex2f(x + 2.0/size_j, y);
 			glEnd();
 		}
 	} else {
 		// draw children
-		for (int k = 0; k < 4; k++) {
+		for (int k = 0; k < 2; k++) {
 			drawMultilevel(node->children[k], ml);
 		}
 	}
 }
 
-void computeMax(qNode* node, int ml) {
-	if (node->leaf || node->level == ml) {
+void computeMax(kdNode* node, int ml) {
+	if (node->leaf || node->level_i + node->level_j == ml) {
 		if (!water) {
 			minP = std::min(minP, node->p);
 			maxP = std::max(maxP, node->p);
 		}
 
 		if (drawVelocity) {
-			maxMag = std::max(maxMag, sqrt(node->vx*node->vx + node->vy*node->vy));
+			//maxMag = std::max(maxMag, sqrt(node->vx*node->vx + node->vy*node->vy));
+			maxMag = std::max(maxMag, node->vx);
+			maxMag = std::max(maxMag, node->vy);
 		}
 	} else {
-		for (int k = 0; k < 4; k++) {
+		for (int k = 0; k < 2; k++) {
 			computeMax(node->children[k], ml);
 		}
 	}
@@ -1164,6 +1050,8 @@ void drawAdaptFunction() {
 	}
 }
 
+
+
 /* Handler for window-repaint event. Call back when the window first appears and
    whenever the window needs to be re-painted. */
 void display() {
@@ -1196,187 +1084,43 @@ void display() {
 }
 
 //tests
-bool assertNeighbors(qNode* n1, qNode* n2, qNode* realN1, qNode* realN2) {
-	printf("asserting neighbors: \n");
-	printf("n1: [%d][%d][%d], ", n1->level, n1->i, n1->j);
-	if (n2 == NULL) printf("n2: NULL\n");
-	else printf("n2: [%d][%d][%d]\n", n2->level, n2->i, n2->j);
-	printf("realN1: [%d][%d][%d], ", realN1->level, realN1->i, realN1->j);
-	if (realN2 == NULL) printf("realN2: NULL\n");
-	else printf("realN2: [%d][%d][%d]\n", realN2->level, realN2->i, realN2->j);
-	if (n2 == NULL) {
-		return realN2 == NULL && n1 == realN1;
-	} else {
-		return (n1 == realN1 && n2 == realN2) || (n1 == realN2 && n2 == realN1);
-	}
-}
-
-// tests neighbor pointers
-void testNeighbors() {
-	qNode* testRoot = new qNode(NULL, 0, 0);
-	testRoot->expand(false);
-
-	for (int i = 0; i < 2; i++) {
-		for (int j = 0; j < 2; j++) {
-			qNode* c = testRoot->children[i * 2 + j];
-			c->expand(false);
-			if (c->neighbors[2+j] != testRoot->children[i*2+(1-j)]) {
-				printf("WRONG INNER X NEIGHBOR (%d, %d)\n", i, j);
-				assert(false);
-			}
-			if (c->neighbors[i] != testRoot->children[(1-i)*2+j]) {
-				printf("WRONG INNER Y NEIGHBOR (%d,%d)\n", i, j);
-				assert(false);
-			}
-		}
-	}
-	for (int i = 0; i < 2; i++) {
-		for (int j = 0; j < 2; j++) {
-			qNode* c = testRoot->children[i * 2 + j];
-			for (int ii = 0; ii < 2; ii++) {
-				for (int jj = 0; jj < 2; jj++) {
-					qNode* cc = c->children[ii* 2 + jj];
-					if (cc->neighbors[ii] != c->children[(1-ii) * 2 + jj]) {
-						printf("WRONG INNER Y NEIGHBOR of %d    - (%d, %d): (%d, %d)\n", cc->id, i, j,  ii, jj);
-						printf("expected: %d, actual: %d\n", cc->neighbors[ii]->id, c->children[(1-ii) * 2 + jj]->id);
-						assert(false);
-					}			
-					if (cc->neighbors[2+jj] != c->children[ii * 2 + (1-jj)]) {
-						printf("WRONG INNER X NEIGHBOR of %d    - (%d, %d): (%d, %d)\n", cc->id, i, j,  ii, jj);
-						printf("expected: %d, actual: %d\n", cc->neighbors[2+jj]->id, c->children[ii * 2 + (1-jj)]->id);
-						assert(false);
-					}
-
-					if (i == ii) {
-						if (cc->neighbors[1-i] != NULL) {
-							printf("null y neighbor incorrect: (%d,%d)(%d,%d)\n", i, j, ii, jj);
-							assert(false);
-						}
-					} else {
-						qNode* shouldNeighbor = testRoot->children[(1-i) * 2 + j]->children[(1-ii) * 2 + jj];
-						if (cc->neighbors[1-ii] != shouldNeighbor) {
-							printf("cross-node y neighbor of %d    incorrect: (%d,%d)(%d,%d)\n", cc->id, i, j, ii, jj);
-							printf("expected: %d, actual: %d\n", cc->neighbors[1-ii]->id, shouldNeighbor->id);
-							assert(false);
-						}
-					}
-					if (j == jj) {
-						if (cc->neighbors[3-j] != NULL) {
-							printf("null x neighbor incorrect: (%d,%d)(%d,%d)", i, j, ii, jj);
-							assert(false);
-						}
-					} else {
-						qNode* shouldNeighbor = testRoot->children[i * 2 + (1-j)]->children[ii * 2 + (1-jj)];
-						if (cc->neighbors[3-jj] != shouldNeighbor) {
-							printf("cross-node x neighbor of %d    incorrect: (%d,%d)(%d,%d)\n", cc->id, i, j, ii, jj);
-							printf("expected: %d, actual: %d\n", cc->neighbors[3-jj]->id, shouldNeighbor->id);
-							assert(false);
-						}
-					}
-				}
-			}
-		}
-	}
-}
-
-void assertf (int id, double a, double b) {
-	//printf("test for id: %d\n", id);
-	if (fabs(a-b) > .00001) {
-		printf("id %d incorrect!, a: %f, b: %f\n", id, a, b);
-		//assert (false);
-	}
-}
-
-void testPressureInterp() {
-	int oldLevels = levels;	
-	bool oldPressureInterp = pressureInterp;
-	levels = 3;
-	pressureInterp = true;
-
-	qNode* testRoot = new qNode(NULL, 0, 0);
-	testRoot->expand(false);
-	testRoot->children[1]->expand(false);
-
-	testRoot->children[0]->p = 1;
-	testRoot->children[2]->p = 6;
-	testRoot->children[3]->p = 7;
-	testRoot->children[1]->children[0]->p = 2;
-	testRoot->children[1]->children[1]->p = 3;
-	testRoot->children[1]->children[2]->p = 4;
-	testRoot->children[1]->children[3]->p = 5;
-
-	assertf(0, testRoot->children[0]->getFaceGradient(2, 0, P), 10.0);
-	assertf(1, testRoot->children[0]->getFaceGradient(2, 1, P), 0);
-	assertf(2, testRoot->children[0]->getFaceGradient(2, 2, P), 16.0/3.0);
-	assertf(3, testRoot->children[0]->getFaceGradient(2, 3, P), 0);
-
-	assertf(4, testRoot->children[2]->getFaceGradient(2, 0, P), 0);
-	assertf(5, testRoot->children[2]->getFaceGradient(2, 1, P), -10.0);
-	assertf(6, testRoot->children[2]->getFaceGradient(2, 2, P), 2.0);
-	assertf(7, testRoot->children[2]->getFaceGradient(2, 3, P), 0);
-
-	assertf(8, testRoot->children[3]->getFaceGradient(2, 0, P), 0);
-	assertf(9, testRoot->children[3]->getFaceGradient(2, 1, P), -20.0/3.0);
-	assertf(10, testRoot->children[3]->getFaceGradient(2, 2, P), 0.0);
-	assertf(11, testRoot->children[3]->getFaceGradient(2, 3, P), -2.0);
-
-	assertf(12, testRoot->children[1]->children[0]->getFaceGradient(2, 0, P), 8.0);
-	assertf(13, testRoot->children[1]->children[0]->getFaceGradient(2, 1, P), 0.0);
-	assertf(14, testRoot->children[1]->children[0]->getFaceGradient(2, 2, P), 4.0);
-	assertf(15, testRoot->children[1]->children[0]->getFaceGradient(2, 3, P), -8.0/3.0);
-
-	assertf(16, testRoot->children[1]->children[1]->getFaceGradient(2, 0, P), 8.0);
-	assertf(17, testRoot->children[1]->children[1]->getFaceGradient(2, 1, P), 0.0);
-	assertf(18, testRoot->children[1]->children[1]->getFaceGradient(2, 2, P), 0.0);
-	assertf(19, testRoot->children[1]->children[1]->getFaceGradient(2, 3, P), -4.0);
-
-	assertf(20, testRoot->children[1]->children[2]->getFaceGradient(2, 0, P), 22.0/3.0);
-	assertf(21, testRoot->children[1]->children[2]->getFaceGradient(2, 1, P), -8.0);
-	assertf(22, testRoot->children[1]->children[2]->getFaceGradient(2, 2, P), 4.0);
-	assertf(23, testRoot->children[1]->children[2]->getFaceGradient(2, 3, P), -14.0/3.0);
-
-	assertf(24, testRoot->children[1]->children[3]->getFaceGradient(2, 0, P), 16.0/3);
-	assertf(25, testRoot->children[1]->children[3]->getFaceGradient(2, 1, P), -8.0);
-	assertf(26, testRoot->children[1]->children[3]->getFaceGradient(2, 2, P), 0.0);
-	assertf(27, testRoot->children[1]->children[3]->getFaceGradient(2, 3, P), -4.0);
-
-	levels = oldLevels;
-	pressureInterp = oldPressureInterp;
-	delete testRoot;
-}
-
-void computeNodalVelocity(qNode* root) {
-	root->invalidateNodalValues();
+void computeNodalVelocity(kdNode* root) {
+	//root->invalidateNodalValues();
 	// loop to try to figure out if done
 	int oldTotalLeft;
 	int totalLeft = 10000000;
 	while (totalLeft > 0) {
 		oldTotalLeft = totalLeft;
-		totalLeft = root->attemptComputeNodalVals(root);
+		//totalLeft = root->attemptComputeNodalVals(root);
 		assert (totalLeft < oldTotalLeft);
 	}
 }
 
-void testNodalVelocity() {
+
+/*void testNodalVelocity() {
 	int oldLevels = levels;
 
-	levels = 4;
+	levels = 3;
 
-	root = new qNode(NULL, 0, 0);
-	root->expand(false);
-	root->children[0]->expand(false);
-	root->children[0]->children[3]->expand(false);
-	root->children[3]->expand(false);
+	root = new kdNode(NULL, 0, 0, 0, 0);
+	root->expand(false, SPLIT_X);
+	root->children[0]->expand(false, SPLIT_Y);
+	root->children[1]->expand(false, SPLIT_Y);
+	root->children[0]->children[0]->expand(false, SPLIT_X);
+	root->children[0]->children[0]->children[1]->expand(false, SPLIT_Y);
+	root->children[0]->children[1]->expand(false, SPLIT_Y);
+	root->children[0]->children[1]->children[0]->expand(false, SPLIT_Y);
+	root->children[1]->children[1]->expand(false, SPLIT_X);
 
 	root->children[0]->vx = 0.0;
-	root->children[0]->vx2 = 6;
+	root->children[0]->vx2 = 26.0/3.0;
 	root->children[0]->vy = 0.0;
-	root->children[0]->vy2 = 13;
+	root->children[0]->vy2 = 0.0;
 
-	root->children[1]->vx = 6;
+	root->children[1]->vx = 26.0/3.0;
 	root->children[1]->vx2 = 0.0;
 	root->children[1]->vy = 0.0;
-	root->children[1]->vy2 = 16.5;
+	root->children[1]->vy2 = 0.0;
 
 	root->children[2]->vx = 0.0;
 	root->children[2]->vx2 = 20;
@@ -1593,19 +1337,216 @@ void testNodalVelocity() {
 
 	delete root;
 	levels = oldLevels;
+}*/
+
+
+
+// tests neighbor pointers
+void testNeighbors() {
+	// TODO
+	//kdNode* testRoot = new kdNode(NULL, 0, 0);
+	//testRoot->expand(false);
+
+}
+
+
+void testAdvect() {
+	// TODO finish later..
+	int oldLevels = levels;
+	int oldTotalLevels = totalLevels;
+	double oldDt = dt;
+
+	dt = 0.0;
+	levels = 2;
+	totalLevels = 4;
+
+	root = new kdNode(NULL, 0, 0, 0, 0);
+	oldRoot = new kdNode(NULL, 0, 0, 0, 0);
+
+	delete root;
+	delete oldRoot;
+	levels = oldLevels;
+	totalLevels = oldTotalLevels;
+	dt = oldDt;
+}
+
+void assertf (int id, double a, double b) {
+	//printf("test for id: %d\n", id);
+	if (fabs(a-b) > .00001) {
+		printf("id %d incorrect!, a: %f, b: %f\n", id, a, b);
+		assert (false);
+	}
+}
+
+void testPressureInterp() {
+	int oldLevels = levels;	
+	int oldTotalLevels = totalLevels;
+	bool oldPressureInterp = pressureInterp;
+	levels = 2;
+	totalLevels = 4;
+	pressureInterp = true;
+
+	kdNode* testRoot = new kdNode(NULL, 0, 0, 0, 0);
+	testRoot->expand(false, SPLIT_X);
+	testRoot->children[0]->expand(false, SPLIT_Y);
+	testRoot->children[1]->expand(false, SPLIT_Y);
+	testRoot->children[0]->children[0]->expand(false, SPLIT_Y);
+	testRoot->children[1]->children[0]->expand(false, SPLIT_X);
+
+	testRoot->children[0]->children[1]->p = 5;
+	testRoot->children[1]->children[1]->p = 6;
+	testRoot->children[0]->children[0]->children[0]->p = 1;
+	testRoot->children[0]->children[0]->children[1]->p = 2;
+	testRoot->children[1]->children[0]->children[0]->p = 3;
+	testRoot->children[1]->children[0]->children[1]->p = 4;
+
+	assertf(0, testRoot->children[0]->children[1]->getFaceGradient(3, 0, P), 0.0);
+	assertf(1, testRoot->children[0]->children[1]->getFaceGradient(3, 1, P), -8.0);
+	assertf(2, testRoot->children[0]->children[1]->getFaceGradient(3, 2, P), 2.0);
+	assertf(3, testRoot->children[0]->children[1]->getFaceGradient(3, 3, P), 0.0);
+	
+	assertf(4, testRoot->children[1]->children[1]->getFaceGradient(3, 0, P), 0.0);
+	assertf(5, testRoot->children[1]->children[1]->getFaceGradient(3, 1, P), -5.0);
+	assertf(6, testRoot->children[1]->children[1]->getFaceGradient(3, 2, P), 0.0);
+	assertf(7, testRoot->children[1]->children[1]->getFaceGradient(3, 3, P), -2.0);
+	
+	assertf(8, testRoot->children[0]->children[0]->children[0]->getFaceGradient(3, 0, P), 4.0);
+	assertf(9, testRoot->children[0]->children[0]->children[0]->getFaceGradient(3, 1, P), 0.0);
+	assertf(10, testRoot->children[0]->children[0]->children[0]->getFaceGradient(3, 2, P), 16.0/3.0);
+	assertf(11, testRoot->children[0]->children[0]->children[0]->getFaceGradient(3, 3, P), 0.0);
+		
+	assertf(12, testRoot->children[0]->children[0]->children[1]->getFaceGradient(3, 0, P), 8.0);
+	assertf(13, testRoot->children[0]->children[0]->children[1]->getFaceGradient(3, 1, P), -4.0);
+	assertf(14, testRoot->children[0]->children[0]->children[1]->getFaceGradient(3, 2, P), 9.0/2.0);
+	assertf(15, testRoot->children[0]->children[0]->children[1]->getFaceGradient(3, 3, P), 0.0);
+	
+	assertf(16, testRoot->children[1]->children[0]->children[0]->getFaceGradient(3, 0, P), 11.0/2.0);
+	assertf(17, testRoot->children[1]->children[0]->children[0]->getFaceGradient(3, 1, P), 0.0);
+	assertf(18, testRoot->children[1]->children[0]->children[0]->getFaceGradient(3, 2, P), 4.0);
+	assertf(19, testRoot->children[1]->children[0]->children[0]->getFaceGradient(3, 3, P), -4.0);
+		
+	assertf(20, testRoot->children[1]->children[0]->children[1]->getFaceGradient(3, 0, P), 4.0);
+	assertf(21, testRoot->children[1]->children[0]->children[1]->getFaceGradient(3, 1, P), 0.0);
+	assertf(22, testRoot->children[1]->children[0]->children[1]->getFaceGradient(3, 2, P), 0.0);
+	assertf(23, testRoot->children[1]->children[0]->children[1]->getFaceGradient(3, 3, P), -4.0);
+	
+	levels = oldLevels;
+	totalLevels = oldTotalLevels;
+	pressureInterp = oldPressureInterp;
+	delete testRoot;
+}
+
+
+
+void testGradLap() {
+	kdNode* testRoot = new kdNode(NULL, 0, 0, 0, 0);
+	testRoot->expand(false, SPLIT_X);
+	testRoot->children[0]->expand(false, SPLIT_X);
+	testRoot->children[1]->expand(false, SPLIT_Y);
+	testRoot->children[1]->children[0]->expand(false, SPLIT_Y);
+	testRoot->children[1]->children[1]->expand(false, SPLIT_X);
+
+	testRoot->children[0]->children[0]->p = 1.0;
+	testRoot->children[0]->children[1]->p = 2.0;
+	testRoot->children[1]->children[0]->children[0]->p = 3.0;
+	testRoot->children[1]->children[0]->children[1]->p = 4.0;
+	testRoot->children[1]->children[1]->children[0]->p = 5.0;
+	testRoot->children[1]->children[1]->children[1]->p = 6.0;
+
+	// gradient tests
+	assertf (0, testRoot->children[0]->children[0]->getFaceGradient(3, 0, P), 0.0);
+	assertf (1, testRoot->children[0]->children[0]->getFaceGradient(3, 1, P), 0.0);
+	assertf (2, testRoot->children[0]->children[0]->getFaceGradient(3, 2, P), 4.0);
+	assertf (3, testRoot->children[0]->children[0]->getFaceGradient(3, 3, P), 0.0);
+
+	assertf (4, testRoot->children[0]->children[1]->getFaceGradient(3, 0, P), 0.0);
+	assertf (5, testRoot->children[0]->children[1]->getFaceGradient(3, 1, P), 0.0);
+	assertf (6, testRoot->children[0]->children[1]->getFaceGradient(3, 2, P), 8.0);//?
+	assertf (7, testRoot->children[0]->children[1]->getFaceGradient(3, 3, P), -4.0);
+
+	assertf (8, testRoot->children[1]->children[0]->children[0]->getFaceGradient(3, 0, P), 4.0);
+	assertf (9, testRoot->children[1]->children[0]->children[0]->getFaceGradient(3, 1, P), 0.0);
+	assertf (10, testRoot->children[1]->children[0]->children[0]->getFaceGradient(3, 2, P), 0.0);//?
+	assertf (11, testRoot->children[1]->children[0]->children[0]->getFaceGradient(3, 3, P), -8.0/3.0);
+
+	assertf (12, testRoot->children[1]->children[0]->children[1]->getFaceGradient(3, 0, P), 4.0);
+	assertf (13, testRoot->children[1]->children[0]->children[1]->getFaceGradient(3, 1, P), -4.0);
+	assertf (14, testRoot->children[1]->children[0]->children[1]->getFaceGradient(3, 2, P), 0.0);
+	assertf (15, testRoot->children[1]->children[0]->children[1]->getFaceGradient(3, 3, P), -16.0/3.0);
+
+	assertf (16, testRoot->children[1]->children[1]->children[0]->getFaceGradient(3, 0, P), 0.0);
+	assertf (17, testRoot->children[1]->children[1]->children[0]->getFaceGradient(3, 1, P), -8.0/3.0);
+	assertf (18, testRoot->children[1]->children[1]->children[0]->getFaceGradient(3, 2, P), 4.0);
+	assertf (19, testRoot->children[1]->children[1]->children[0]->getFaceGradient(3, 3, P), -12.0);
+
+	assertf (20, testRoot->children[1]->children[1]->children[1]->getFaceGradient(3, 0, P), 0.0);
+	assertf (21, testRoot->children[1]->children[1]->children[1]->getFaceGradient(3, 1, P), -16.0/3.0);
+	assertf (22, testRoot->children[1]->children[1]->children[1]->getFaceGradient(3, 2, P), 0.0);
+	assertf (23, testRoot->children[1]->children[1]->children[1]->getFaceGradient(3, 3, P), -4.0);
+
+	// laplacian tests
+
+	double aSum, bSum, laplacian;
+	kdNode* n;
+
+	aSum = 0.0;
+	bSum = 0.0;
+	n = testRoot->children[0]->children[0];
+	n->getLaplacian(3, &aSum, &bSum, P);
+	laplacian = (aSum * n->p + bSum) * (1<<n->level_i) * (1<<n->level_j);
+	assertf (24, laplacian, 16);
+
+	aSum = 0.0;
+	bSum = 0.0;
+	n = testRoot->children[0]->children[1];
+	n->getLaplacian(3, &aSum, &bSum, P);
+	laplacian = (aSum * n->p + bSum) * (1<<n->level_i) * (1<<n->level_j);
+	assertf (25, laplacian, 16);
+
+	aSum = 0.0;
+	bSum = 0.0;
+	n = testRoot->children[1]->children[0]->children[0];
+	n->getLaplacian(3, &aSum, &bSum, P);
+	laplacian = (aSum * n->p + bSum) *  (1<<n->level_i) * (1<<n->level_j);
+	assertf (26, laplacian, 32.0/3.0);
+
+	aSum = 0.0;
+	bSum = 0.0;
+	n = testRoot->children[1]->children[0]->children[1];
+	n->getLaplacian(3, &aSum, &bSum, P);
+	laplacian = (aSum * n->p + bSum) *  (1<<n->level_i) * (1<<n->level_j);
+	assertf (27, laplacian, -32.0/3.0);
+
+	aSum = 0.0;
+	bSum = 0.0;
+	n = testRoot->children[1]->children[1]->children[0];
+	n->getLaplacian(3, &aSum, &bSum, P);
+	laplacian = (aSum * n->p + bSum) *  (1<<n->level_i) * (1<<n->level_j);
+	assertf (28, laplacian, -14.0*8.0/3.0);
+
+	aSum = 0.0;
+	bSum = 0.0;
+	n = testRoot->children[1]->children[1]->children[1];
+	n->getLaplacian(3, &aSum, &bSum, P);
+	laplacian = (aSum * n->p + bSum) *  (1<<n->level_i) * (1<<n->level_j);
+	assertf (29, laplacian, -80.0/3.0);
+
+	// cleanup
+	delete testRoot;
 }
 
 // poisson solver functions
 
 // returns max(abs(R))
-double computeResidual(qNode* node) {
-	int size = 1<<node->level;
+double computeResidual(kdNode* node) {
+	int size_i = 1<<node->level_i;
+	int size_j = 1<<node->level_j;
 	if (node->leaf) { // if leaf cell, compute residual
 		// compute it: R = div(vx, vy) - 1/(ha)*sum of (s * grad) for each face
 		double aSum = 0.0;
 		double bSum = 0.0;
-		node->getLaplacian(levels - 1, &aSum, &bSum, P);
-		double laplacian = (aSum * node->p + bSum) * size * size;
+		node->getLaplacian(totalLevels, &aSum, &bSum, P);
+		double laplacian = (aSum * node->p + bSum) * size_i * size_j;
 		
 		double R = node->divV - laplacian;
 		
@@ -1622,11 +1563,11 @@ double computeResidual(qNode* node) {
 	} else {
 		double maxR = 0.0;
         node->R = 0.0;
-		for (int k = 0; k < 4; k++) {
+		for (int k = 0; k < 2; k++) {
 			maxR = std::max(maxR, computeResidual(node->children[k]));
 			node->R += node->children[k]->R;
 		}
-		node->R /= 4.0;
+		node->R /= 2.0;
 		return maxR;
 	}
 }
@@ -1634,10 +1575,11 @@ double computeResidual(qNode* node) {
 
 // relax the node at the given multilevel
 // puts the new value of dp in temp
-bool relaxRecursive(qNode* node, int ml) {
-	assert (node->level <= ml);
-	int size = 1<<node->level;
-	if (node->level == ml || node->leaf) {
+bool relaxRecursive(kdNode* node, int ml) {
+	assert (node->level_i + node->level_j <= ml);
+	int size_i = 1<<node->level_i;
+	int size_j = 1<<node->level_j;
+	if (node->level_i + node->level_j == ml || node->leaf) {
 		double aSum = 0.0;
         double bSum = 0.0;
         double dp;
@@ -1647,7 +1589,7 @@ bool relaxRecursive(qNode* node, int ml) {
 		node->getLaplacian(ml, &aSum, &bSum, DP);
 		
         // A*R = bSum - aSum*dp, dp = (bSum - A*R)/asum, A = h*h = 1/size^2
-		node->temp = -(bSum - node->R/size/size)/aSum;
+		node->temp = -(bSum - node->R/size_i/size_j)/aSum;
 
 		double diff = oldDif - node->temp;
 
@@ -1659,35 +1601,35 @@ bool relaxRecursive(qNode* node, int ml) {
 	} else {
 		// relax children
 		bool done = true;
-		for (int k = 0; k < 4; k++) {
+		for (int k = 0; k < 2; k++) {
 			done &= relaxRecursive(node->children[k], ml);
 		}
 		return done;
 	}
 }
 
-void recursiveInject(qNode* node, int ml) {
-	if (node->level == ml) {
+void recursiveInject(kdNode* node, int ml) {
+	if (node->level_i + node->level_j  == ml) {
 		node->dp = node->parent->dp;
 	}
 	if (!node->leaf) {
-		for (int k = 0; k < 4; k++) {
+		for (int k = 0; k < 2; k++) {
 			recursiveInject(node->children[k], ml);
 		}
 	}
 }
 
-void recursiveUpdate(qNode* node, int ml) {	
+void recursiveUpdate(kdNode* node, int ml) {	
 	node->dp = node->temp;
 	if (!node->leaf) {
-		for (int k = 0; k < 4; k++) {
+		for (int k = 0; k < 2; k++) {
 			recursiveUpdate(node->children[k], ml);
 		}
 	}
 }
 
 void relax(int d, int r) {
-	assert (d < levels);
+	assert (d <= totalLevels);
 
 	//printf("relaxing level %d\n", d);
 	// get initial gress from previous level, if possible
@@ -1695,7 +1637,7 @@ void relax(int d, int r) {
 
 	bool done = false;
     int totalCycles = 0;
-	while (r-- > 0/*!done*/) {
+	while (r-- > 0/* && !done*/) {
         totalCycles++;
 		done = relaxRecursive(root, d);
 		recursiveUpdate(root, d);
@@ -1720,26 +1662,28 @@ void relax(int d, int r) {
 
 // returns true if leaf should be expanded, false if it should not
 
+
 double thresh = 0.1;
 
-double curlAdaptFunction(qNode* node) {
+double curlAdaptFunction(kdNode* node) {
 	double curl = node->getCurl();
 	return fabs(curl) > thresh;
 }
 
-double vnormAdaptFunction(qNode* node) {
-	int size = 1<<node->level;
-	double vnorm = fabs(node->vx2-node->vx)/size + fabs(node->vy2-node->vy)/size;
+double vnormAdaptFunction(kdNode* node) {
+	int size_i = 1<<node->level_i;
+	int size_j = 1<<node->level_j;
+	double vnorm = fabs(node->vx2-node->vx)/size_j + fabs(node->vy2-node->vy)/size_i;
 	return vnorm > thresh;
 }
 
-bool pGradAdaptFunction(qNode* node) {
-    //std::pair<double, double> pgrad = node->getPressureGradient();
-	std::pair<double, double> pgrad = node->getValueGradient(P);
-    return fabs(pgrad.first + pgrad.second) > thresh/(1<<node->level);
+bool pGradAdaptFunction(kdNode* node) {
+	assert (false);
+	//std::pair<double, double> pgrad = node->getValueGradient(P);
+    //return fabs(pgrad.first + pgrad.second) > pressureThresh/(1<<node->level);
 }
 
-bool adaptFunction(qNode* node) {
+bool adaptFunction(kdNode* node) {
 	assert(adaptScheme != ADAPTNONE);
 	if (adaptScheme == PGRAD) {
     	return pGradAdaptFunction(node);
@@ -1751,33 +1695,63 @@ bool adaptFunction(qNode* node) {
 	assert (false);
 }
 
+SplitDir velAdaptDirFunction(kdNode* node) {
+	// dimension with bigger velocity gradient
+	double dvdx = fabs(node->vx2 - node->vx)*(1<<node->level_j);
+	double dvdy = fabs(node->vy2 - node->vy)*(1<<node->level_i);
+	if (dvdx > dvdy) {
+		return SPLIT_X;
+	} else {
+		return SPLIT_Y;
+	}
+}
+
+SplitDir pGradAdaptDirFunction(kdNode* node) {
+	assert(false);
+}	
+
+SplitDir adaptDirFunction(kdNode* node) {
+	assert (adaptScheme != ADAPTNONE);
+	assert (node->level_i + node->level_j < totalLevels);
+	if (node->level_i == levels || node->level_i - MAX_LEVEL_DIF == node->level_j) {
+		return SPLIT_X;
+	} else if (node->level_j == levels || node->level_j - MAX_LEVEL_DIF == node->level_i) {
+		return SPLIT_Y;
+	}
+	if (adaptScheme == PGRAD) {
+		return pGradAdaptDirFunction(node);
+	} else if (adaptScheme == CURL || adaptScheme == VNORM) {
+		return velAdaptDirFunction(node);
+	}
+}
+
 // trees should have the same structure
 // use old tree for adapt calculations
 // copies new pressure over
 // returns true if any nodes were changed, false otherwise
-bool recursiveAdaptAndCopy(qNode* node, qNode* oldNode) {
+bool recursiveAdaptAndCopy(kdNode* node, kdNode* oldNode) {
 	// TODO implement properly with nodal/face velocities
-	node->p = oldNode->p;
-	if (node->level == levels - 1) return false;
+	if (node->level_i + node->level_j == totalLevels) return false;
 	assert (node->leaf == oldNode->leaf);
+	node->p = oldNode->p;
 	if (node->leaf) {
 		if (adaptFunction(oldNode)) {
+			SplitDir dir = adaptDirFunction(oldNode);
+			double oldP = oldNode->p;
 
-			oldNode->expand(true);
-			node->expand(false);
-			for (int k = 0; k < 4; k++) {
+			oldNode->expand(true, dir);
+			node->expand(false, dir);
+			for (int k = 0; k < 2; k++) {
 				node->children[k]->p = oldNode->children[k]->p;
 				node->children[k]->vx = oldNode->children[k]->vx;
 				node->children[k]->vy =  oldNode->children[k]->vy;
 				node->children[k]->vx2 = oldNode->children[k]->vx2;
 				node->children[k]->vy2 = oldNode->children[k]->vy2;
-				for (int c = 0; c < 4; c++) {
-					node->cvx[c] = oldNode->cvx[c];
-					node->cvy[c] = oldNode->cvy[c];
-				}
+				 // TODO corner values
 			}
 			// reset old node to old state so it is the same as before, so it can be used in other calculations
-			oldNode->contract(false);
+			oldNode->contract();
+			oldNode->p = oldP;
 
 			// now node is adapted, with values from oldnode's calculations
 			return true;
@@ -1785,7 +1759,7 @@ bool recursiveAdaptAndCopy(qNode* node, qNode* oldNode) {
 		return false;
 	}
 	bool allChildrenLeaves = true;
-    for (int k = 0; k < 4; k++) {
+    for (int k = 0; k < 2; k++) {
         if (!node->children[k]->leaf) {
             allChildrenLeaves = false;
             break;
@@ -1793,12 +1767,16 @@ bool recursiveAdaptAndCopy(qNode* node, qNode* oldNode) {
     }
 	if (allChildrenLeaves && !adaptFunction(oldNode)) {
         // this wouldn't be expanded if it was a leaf, so it shouldn't have leaf children
-		node->contract(true);
-		//node->p = oldNode->p;
+		node->contract();
+		node->p = 0.0;
+		for (int k = 0; k < 2; k++) {
+			node->p += oldNode->children[k]->p;
+		}
+		node->p /= 2.0;
 		return true;
     } else {
 		bool anyChanged = false;
-        for (int k = 0; k < 4; k++) {
+        for (int k = 0; k < 2; k++) {
             anyChanged |= recursiveAdaptAndCopy(node->children[k], oldNode->children[k]);
         }
 		return anyChanged;
@@ -1806,117 +1784,103 @@ bool recursiveAdaptAndCopy(qNode* node, qNode* oldNode) {
 	
 }
 
-void copy(qNode* node, qNode* oldNode) {
+void copy(kdNode* node, kdNode* oldNode) {
 	// need to create/delete new nodes if it adapted
 	if (node->leaf && !oldNode->leaf) {
 		// old node expanded, expand new node
-		node->expand(false);
+		node->expand(false, oldNode->splitDir);
 	} else if (!node->leaf && oldNode->leaf) {
 		// old node contracted
-		node->contract(false); // this doesn't handle multiple contractions per step, but rn only do single contract/expand per step
+		node->contract(); // TODO this doesn't handle multiple contractions per step, but rn only do single contract/expand per step
 	}
 	
 	node->p = oldNode->p;
 
 	if (!node->leaf) {
-		for (int k = 0; k < 4; k++) {
+		for (int k = 0; k < 2; k++) {
 			copy(node->children[k], oldNode->children[k]);
 		}
 	}
 }
 
-// advect face velocities, reading from old tree and writing to new tree
-void setNewAdvect(qNode* node, qNode* oldNode) {
-	if (node->leaf) {
+void setNewAdvect(kdNode* node) {
+	assert (false);
+	/*if (node->leaf) {
+		if (node->i == 0 || node->j == 0) {
+			node->cvx = 0.0;
+			node->cvy = 0.0;
+			return;
+		}
 		int size = 1<<node->level;
-		double x, y;
-		qNode* last;
-		std::pair<double, double> newvel;
-		// vx
-		if (node->j == 0) {
-			node->vx = 0.0;
-		} else {
-			x = (double(node->j))/size;
-			y = (node->i + 0.5)/size;
-			last = getSemiLagrangianLookback(oldRoot, &x, &y, 1, levels - 1, oldNode->vx, (oldNode->cvy[0] + oldNode->cvy[2])/2.0);
-			// TODO implement
-			newvel = last->getVelocityAt(x, y);
-			node->vx = newvel.first;
-		}
-		// vx2
-		if (node->j == size - 1) {
-			node->vx2 = 0.0;
-		} else {
-			x = (node->j + 1.0)/size;
-			y = (node->i + 0.5)/size;
-			last = getSemiLagrangianLookback(oldRoot, &x, &y, 1, levels - 1, oldNode->vx2, (oldNode->cvy[1] + oldNode->cvy[3])/2.0);
-			// TODO implement
-			newvel = last->getVelocityAt(x, y);
-			node->vx2 = newvel.first;		
-		}
-		// vy
-		if (node->i == 0) {
-			node->vy = 0.0;
-		} else {
-			x = (node->j + 0.5)/size;
-			y = (double(node->i))/size;
-			last = getSemiLagrangianLookback(oldRoot, &x, &y, 1, levels - 1, (oldNode->cvx[0] + oldNode->cvx[1])/2.0, oldNode->vy);
-			// TODO implement
-			newvel = last->getVelocityAt(x, y);
-			node->vy = newvel.second;
-		}
-		// vx2
-		if (node->i == size - 1) {
-			node->vy2 = 0.0;
-		} else {
-			x = (node->j + 0.5)/size;
-			y = (node->i + 1.0)/size;
-			last = getSemiLagrangianLookback(oldRoot, &x, &y, 1, levels - 1, (oldNode->cvx[2] + oldNode->cvx[3])/2.0, oldNode->vy2);
-			// TODO implement
-			newvel = last->getVelocityAt(x, y);
-			node->vy2 = newvel.second;
-		}
-		//printf("computed new velocities for node: %f, %f, %f, %f\n", node->vx, node->vx2, node->vy, node->vy2);
+		double x = (node->j + 0.5)/size;
+		double y = (node->i + 0.5)/size;
+		kdNode* last= getSemiLagrangianLookback(oldRoot, &x, &y, 1, node->level);
+		// TODO implement
+		std::pair<double, double> newvel = last->getVelocityAt(oldRoot, x, y);
+		node->cvx = newvel.first;
+		node->cvy = newvel.second;
 	} else {
-
-		// average child velocities to this node
 		for (int k = 0; k < 4; k++) {
-			setNewAdvect(node->children[k], oldNode->children[k]);
+			setNewAdvect(node->children[k]);
 		}
-		node->computeVelFromChildren();
-	}
+		node->cvx = node->children[0]->cvx;
+		node->cvy = node->children[0]->cvy;
+	}*/
 }
 
-// assumes nodal velocities are already set on old tree
+
+// TODO put on node class
+/*void setNewFace(kdNode* node) {
+	assert (false);
+	// TODO this is innacurate at T-junctions on edge?
+	std::pair<double, double> c00 = node->getNodalAt(root, 0, 0);
+	std::pair<double, double> c01 = node->getNodalAt(root, 0, 1);
+	std::pair<double, double> c10 = node->getNodalAt(root, 1, 0);
+	std::pair<double, double> c11 = node->getNodalAt(root, 1, 1);
+	node->vx = (c00.first + c10.first)/2.0;
+	node->vy = (c00.second + c01.second)/2.0;
+	node->vx2 = (c01.first + c11.first)/2.0;
+	node->vy2 = (c10.second + c11.second)/2.0;
+
+	if (!node->leaf) {
+		for (int k = 0; k < 2; k++) {
+			setNewFace(node->children[k]);
+		}
+	}
+}*/
+
 void advectAndCopy() {
 
 	copy(root, oldRoot);
 
 	// assume nodal values have been computed on old tree
 	// set nodal values on new tree to advected nodal values on old tree
-	setNewAdvect(root, oldRoot);
+	//setNewAdvect(root);
 
-	computeNodalVelocity(root);
+	// set new face values from nodal values
+	//setNewFace(root);
+
 }
 
-void correctPressure(qNode* node) {
+void correctPressure(kdNode* node) {
 	//node->p += node->dp;
 	if (node->leaf) {
 		//printf("at node %d (%d, %d) correcting pressure %f by %f\n", node->level, node->i, node->j, node->p, node->dp);
 		node->p += node->dp;
 	} else {
-		for (int k = 0; k < 4; k++) {
+		for (int k = 0; k < 2; k++) {
 			correctPressure(node->children[k]);
 		}
 	}
 }
 
-void project(qNode* node) {
+void project(kdNode* node) {
 	// correct velocity with updated pressure field to make non-divergent
 	if (node->leaf) {
 		//if (node->i == 0 || node->j == 0) return;
 		double pgradX, pgradY;
-		int size = 1<<node->level;
+		int size_i = 1<<node->level_i;
+		int size_j = 1<<node->level_j;
 		if (node->j > 0) {
 			pgradX = -node->getFaceGradient(levels - 1, 3, P);
 			node->vx -= pgradX;
@@ -1925,30 +1889,40 @@ void project(qNode* node) {
 			pgradY = -node->getFaceGradient(levels - 1, 1, P);
 			node->vy -= pgradY;
 		}
-		if (node->j < size - 1) {
+		if (node->j < size_j - 1) {
 			pgradX = node->getFaceGradient(levels - 1, 2, P);
 			node->vx2 -= pgradX;
 		}
-		if (node->i < size - 1) {
+		if (node->i < size_i - 1) {
 			pgradY = node->getFaceGradient(levels - 1, 0, P);
 			node->vy2 -= pgradY;
 		}
 		
 	} else {
-		for (int k = 0; k < 4; k++) {
+		for (int k = 0; k < 2; k++) {
 			project(node->children[k]);
 		}
 
-		node->vx = (node->children[0]->vx + node->children[2]->vx)/2.0;
-		node->vy = (node->children[0]->vy + node->children[1]->vy)/2.0;
-		node->vx2 = (node->children[2]->vx2 + node->children[3]->vx2)/2.0;
-		node->vy2 = (node->children[1]->vy2 + node->children[3]->vy2)/2.0;
+		assert (node->splitDir != SPLIT_NONE);
+		if (node->splitDir == SPLIT_X) {
+			node->vx = node->children[0]->vx;
+			node->vx2 = node->children[1]->vx2;
+			node->vy = (node->children[0]->vy + node->children[1]->vy)/2.0;
+			node->vy2 = (node->children[0]->vy2 + node->children[1]->vy2)/2.0;	
+		} else {
+			node->vy = node->children[0]->vy;
+			node->vy2 = node->children[1]->vy;
+			node->vx = (node->children[0]->vx + node->children[1]->vx)/2.0;
+			node->vx2 = (node->children[0]->vx2 + node->children[1]->vx2)/2.0;
+			
+		}
 	}
 }
 
-void clampVelocity(qNode* node) {
+void clampVelocity(kdNode* node) {
+	assert (false);
 	// clamp velocity
-	int size = 1<<node->level;
+	/*int size = 1<<node->level;
 	if (node->i == 0 || node->i == size-1) {
 		node->vy = 0.0;
 	}
@@ -1959,7 +1933,7 @@ void clampVelocity(qNode* node) {
 		for (int k = 0; k < 4; k++) {
 			clampVelocity(node->children[k]);
 		}	
-	}
+	}*/
 }
 
 void eulerAdvectParticle(Particle& p, std::pair<double, double> v) {
@@ -1970,10 +1944,8 @@ void eulerAdvectParticle(Particle& p, std::pair<double, double> v) {
 void advectParticles() {
 	for (int i = 0; i < numParticles; i++) {
 		if (particleAlgorithm == EULER) {
-		std::pair<double, double> vGrad = getLeaf(root, particles[i].x, particles[i].y, levels-1)->getVelocityAt(particles[i].x, particles[i].y);
-			eulerAdvectParticle(particles[i], vGrad);
 		}
-	}	
+	}
 }
 
 double runVCycle() {
@@ -1981,9 +1953,16 @@ double runVCycle() {
 	root->dp = 0;
 	// do not relax level 0 since it makes no sense to do so...
 
-	for (int d = 1; d < levels; d++) {
+	for (int d = 1; d <= totalLevels; d++) {
 		relax(d, (d==1) ? MAX_RELAX_COUNT : OPTIMIZED_RELAX_COUNT);
 	}
+	/*relax(1, MAX_RELAX_COUNT);
+	for (int d = 2; d <= totalLevels; d++) {
+		if (d%2 == 0 || d == totalLevels)
+			relax(d, OPTIMIZED_RELAX_COUNT);
+		else
+			recursiveInject(root, d);
+	}*/
 
 	//printf("correcting pressure\n");
 	// use corrections to improve pressure
@@ -2011,30 +1990,31 @@ double runVCycle() {
 
 }
 
-void poissonAverageR(qNode* node, double* total) {
+void poissonAverageR(kdNode* node, double* total) {
 	if (node->leaf) {
-		int size = 1<<node->level;
-		*total += node->R / size / size;
+		int size_i = 1<<node->level_i;
+		int size_j = 1<<node->level_j;
+		*total += node->R / size_i / size_j;
 	} else {
-		for (int k = 0; k < 4; k++) {
+		for (int k = 0; k < 2; k++) {
 			poissonAverageR(node->children[k], total);
 		}
 	}
 }
 
-void poissonCorrectR(qNode* node, double K) {
+void poissonCorrectR(kdNode* node, double K) {
 	node->R -= K;
 	if (!node->leaf) {
-		for (int k = 0; k < 4; k++) {
+		for (int k = 0; k < 2; k++) {
 			poissonCorrectR(node->children[k], K);
 		}
 	}
 }
 
-double getMaxR(qNode* node) {
+double getMaxR(kdNode* node) {
 	if (node->leaf)	return fabs(node->R);
 	double max = 0.0;
-	for (int k = 0; k < 4; k++)
+	for (int k = 0; k < 2; k++)
 		max = fmax(max, getMaxR(node->children[k]));
 	return max;
 }
@@ -2051,14 +2031,15 @@ double fixAndCheckResidual() {
 	return newMaxR;
 }
 
-void projectionCheck(qNode* node, double* max, double* avg) {
+void projectionCheck(kdNode* node, double* max, double* avg) {
 	if (node->leaf) {
 		//printf("divV after projection: %f\n", node->divV);
 		*max = fmax(*max, fabs(node->divV));
-		int size = 1<<node->level;
-		*avg += fabs(node->divV)/size/size;
+		int size_i = 1<<node->level_i;
+		int size_j = 1<<node->level_j;
+		*avg += fabs(node->divV)/size_i/size_j;
 	} else {
-		for (int k = 0; k < 4; k++) {
+		for (int k = 0; k < 2; k++) {
 			projectionCheck(node->children[k], max, avg);
 		}
 	}
@@ -2089,15 +2070,6 @@ void runStep() {
 	startTime();
 	advectAndCopy();
 	totalTime += endTime("advecting and copying");
-
-	printf ("doing adaptivity\n");
-	startTime();
-    // given new state, do adaptivity
-	if (adaptScheme != ADAPTNONE) {
-		std::swap(root, oldRoot);
-		recursiveAdaptAndCopy(root, oldRoot);
-	}
-	totalTime += endTime("adapting");
 	
 	printf("computing divV\n");
 
@@ -2129,6 +2101,15 @@ void runStep() {
 	totalTime += endTime("poisson solver");
 	
 
+	printf ("doing adaptivity\n");
+	startTime();
+    // given new state, do adaptivity
+	if (adaptScheme != ADAPTNONE) {
+		std::swap(root, oldRoot);
+		recursiveAdaptAndCopy(root, oldRoot);
+	}
+	totalTime += endTime("adapting");
+
 	startTime();
 	double max = 0.0;
 	double avg = 0.0;
@@ -2146,7 +2127,7 @@ void runStep() {
 	projectionCheck(root, &max, &avg);
 	printf("max divV afer project: %f, avg divV after project: %f\n", max, avg);
 
-	clampVelocity(root);
+	//clampVelocity(root);
 	totalTime += endTime("projecting and clamping velocity");
 
 	printf("total run step time: %.3f\n", totalTime);
@@ -2164,106 +2145,104 @@ void runStep() {
 	frameNumber++;
 }
 
-void initNodeLeftUniform(qNode* node) {
-	int size = 1<<node->level;
+void initNodeLeftUniform(kdNode* node) {
+	int size_i = 1<<node->level_i;
 	//node->p = 1.0/size/size;
 	node->p = 0.0;
 	node->vx = 0.0;
 	node->vy = 0.0;
-	node->vx2 = 0.0;
-	node->vy2 = 0.0;
 	node->phi = 0.0;
-	if (node->i == size/2 || node->i == size/2-1) {
+	if (node->i == size_i/2 || node->i == size_i/2-1) {
 		node->vx = -1.0;
-		node->vx2 = -1.0;
 	}	
 }
 
-void initNodeSink(qNode* node) {
-	int size = 1<<node->level;
-	node->p = 1.0/size/size;
+void initNodeSink(kdNode* node) {
+	int size_i = 1<<node->level_i;
+	int size_j = 1<<node->level_j;
+	node->p = 1.0/size_j/size_i;
 	node->phi = 0.0;
 
 	double center = 0.5;
-	node->vx = center - (node->j + 0.5)/size;
-	node->vy = center - (node->i + 0.5)/size;
+	node->vx = center - (node->j + 0.5)/size_j;
+	node->vy = center - (node->i + 0.5)/size_i;
 	double len = sqrt(node->vx * node->vx + node->vy * node->vy);
 	node->vx /= len;
 	node->vy /= len;
 }
 
-void initNodeSrcSink(qNode* node) {
-	int size = 1<<node->level;
-	node->p = 1.0/size/size;
-	//node->p = 1.0;
+void initNodeSrcSink(kdNode* node) {
+	int size_i = 1<<node->level_i;
+	int size_j = 1<<node->level_j;
+	node->p = 1.0/size_i/size_j;
 	node->phi = 0.0;
 	
 	double src = .125;
 	double sink = .875;
 
-	double vxsrc = (node->j + 0.5)/size - src;
-	double vysrc = (node->i + 0.5)/size - src;
+	double vxsrc = (node->j + 0.5)/size_j - src;
+	double vysrc = (node->i + 0.5)/size_i - src;
 	double lensrc = sqrt(vxsrc * vxsrc + vysrc * vysrc);
 
-	double vxsink = sink - (node->j + 0.5)/size;
-	double vysink = sink - (node->i + 0.5)/size;
+	double vxsink = sink - (node->j + 0.5)/size_j;
+	double vysink = sink - (node->i + 0.5)/size_i;
 	double lensink = sqrt(vxsink * vxsink + vysink * vysink);
 	
 	node->vx = vxsrc/lensrc + vxsink/lensink;
 	node->vy = vysrc/lensrc + vysink/lensink;
 }
 
-void initPoissonTest(qNode* node) {
+void initPoissonTest(kdNode* node) {
 	
-	return;
 	node->phi = 0;
 	node->vx = 0;
 	node->vy = 0;
 	
-	int size = 1<<node->level;
-	double x = (node->j + 0.5)/size;
-	double y = (node->i + 0.5)/size;
+	//int size = 1<<node->level;
+	//double x = (node->j + 0.5)/size;
+	//double y = (node->i + 0.5)/size;
 
 	node->p = 0;
 	
 }
 
-void initProjectTest(qNode* node) {
-	int size = 1<<node->level;
+void initProjectTest(kdNode* node) {
+	int size_i = 1<<node->level_i;
+	int size_j = 1<<node->level_j;
 	node->p = 0.0;
 	node->dp = 0.0;
 
 	assert (projectTestFunc != PROJECTFUNCNONE);
 
-	double x = ((float)node->j)/size;
-	double y = ((float)node->i)/size;
+	double x = ((float)node->j)/size_j;
+	double y = ((float)node->i)/size_i;
 
 	if (projectTestFunc == PROJECTXY) {
-		node->vx = (node->j+0.5)*(node->j+0.5)/size/size;
-		node->vy = 1-(node->i+0.5)*(node->i+0.5)/size/size;
+		node->vx = (node->j+0.5)*(node->j+0.5)/size_j/size_j;
+		node->vy = 1-(node->i+0.5)*(node->i+0.5)/size_i/size_i;
 	
-		node->vx2 = (node->j+1.5)*(node->j+1.5)/size/size;
-		node->vy2 = 1-(node->i+1.5)*(node->i+1.5)/size/size;
+		node->vx2 = (node->j+1.5)*(node->j+1.5)/size_j/size_j;
+		node->vy2 = 1-(node->i+1.5)*(node->i+1.5)/size_i/size_i;
 	} else if (projectTestFunc == PROJECTSIN) {
 		// vx
 		double x2 = x;
-		double y2 = y + 0.5/size;
+		double y2 = y + 0.5/size_i;
 		node->vx = 2*M_PI*sin(2*M_PI*x2) - 2*M_PI*sin(2*M_PI*x2)*cos(2*M_PI*y2);
 
-		x2 = x+1.0/size;
+		x2 = x+1.0/size_j;
 		node->vx2 = 2*M_PI*sin(2*M_PI*x2) - 2*M_PI*sin(2*M_PI*x2)*cos(2*M_PI*y2);
 
 		//vy
-		x2 = x + 0.5/size;
+		x2 = x + 0.5/size_j;
 		y2 = y;
 		node->vy = 2*M_PI*sin(2*M_PI*y2) - 2*M_PI*cos(2*M_PI*x2)*sin(2*M_PI*y2);
 
-		y2 = y + 1.0/size;
+		y2 = y + 1.0/size_i;
 		node->vy2 = 2*M_PI*sin(2*M_PI*y2) - 2*M_PI*cos(2*M_PI*x2)*sin(2*M_PI*y2);	
 	}
 }
 
-void initNodeFunction(qNode* node) {
+void initNodeFunction(kdNode* node) {
 	if (startState == LEFT || startState == ERRORTEST)
 		initNodeLeftUniform(node);
 	else if (startState == SINK)
@@ -2279,34 +2258,36 @@ void initNodeFunction(qNode* node) {
 }
 
 // inits leaves according to test and averages non-leaves
-void initRecursive(qNode* node, int d) {
-	if (node->level == d) {
+void initRecursive(kdNode* node, int d) {
+	if (node->level_i + node->level_j == d) {
 		initNodeFunction(node);
 	} else {
-		node->expand(false);
+		SplitDir dir = (node->level_i == node->level_j) ? SPLIT_X : SPLIT_Y;
+		node->expand(false, dir);
 
 		node->p = 0.0;
         node->vx = 0.0;
         node->vy = 0.0;
         //node->phi = 0.0;
 
-        for (int k = 0; k < 4; k++) {
+        for (int k = 0; k < 2; k++) {
 			initRecursive(node->children[k], d);
 			node->p += node->children[k]->p;
-			node->vx += node->children[k]->vx;
-			node->vy += node->children[k]->vy;
+			//node->vx += node->children[k]->vx;
+			//node->vy += node->children[k]->vy;
 			//node->phi += node->children[k]->phi;
+			// TODO do velocity properly here
         }
 
         node->p /= 4.0;
-        node->vx /= 4.0;
-        node->vy /= 4.0;
+        //node->vx /= 4.0;
+        //node->vy /= 4.0;
         //node->phi /= 4.0;
 	}
 }
 
-int poissonk = 2;
-int poissonl = 2;
+int poissonk = 3;
+int poissonl = 3;
 
 double getPoissonVX(double x, double y){
 	if (poissonTestFunc == POISSONXY) {
@@ -2331,25 +2312,24 @@ double getPoissonVY(double x, double y){
 	assert (false);
 }
 
-
-
-void poissonReset(qNode* node) {
+void poissonReset(kdNode* node) {
 	node->p = 0;
-	int size = 1<<node->level;
-	double x = (node->j + 0.0)/size;
-	double y = (node->i + 0.0)/size;
+	int size_i = 1<<node->level_i;
+	int size_j = 1<<node->level_j;
+	double x = (node->j + 0.0)/size_j;
+	double y = (node->i + 0.0)/size_i;
 
 	// vel
 	double x2 = x;
-	double y2 = y + 0.5/size;
+	double y2 = y + 0.5/size_i;
 	node->vx = getPoissonVX(x2, y2);
-	x2 = x + 1.0/size;
+	x2 = x + 1.0/size_j;
 	node->vx2 = getPoissonVX(x2, y2);
 
-	x2 = x + 0.5/size;
+	x2 = x + 0.5/size_j;
 	y2 = y;
 	node->vy = getPoissonVY(x2, y2);
-	y2 = y + 1.0/size;
+	y2 = y + 1.0/size_i;
 	node->vy2 = getPoissonVY(x2, y2);
 	
 	// set pressure to avg of function so it comes out with right constant
@@ -2362,17 +2342,18 @@ void poissonReset(qNode* node) {
 	else
 		assert(false);
 	if (!node->leaf) {
-		for (int k = 0; k < 4; k++) {
+		for (int k = 0; k < 2; k++) {
 			poissonReset(node->children[k]);
 		}
 	}
 }
 
-void computePoissonError(qNode* node, double* total) {
+void computePoissonError(kdNode* node, double* total) {
 	if (node->leaf) {
-		int size = 1<<node->level;
-		double x = (node->j + 0.5)/size;
-		double y = (node->i + 0.5)/size;
+		int size_i = 1<<node->level_i;
+		int size_j = 1<<node->level_j;
+		double x = (node->j + 0.5)/size_j;
+		double y = (node->i + 0.5)/size_i;
 		double correct  = 0;
 		if (poissonTestFunc == POISSONXY) {
 			double newy = 2*y-1;
@@ -2384,36 +2365,44 @@ void computePoissonError(qNode* node, double* total) {
 		} else {
 			assert(false);
 		}
-		*total += fabs(node->p - correct)/size/size;
+		*total += fabs(node->p - correct)/size_i/size_j;
 	} else {
-		for (int k = 0; k < 4; k++) {
+		for (int k = 0; k < 2; k++) {
 			computePoissonError(node->children[k], total);
 		}
 	}
 }
 
-void poissonAverage(qNode* node, double* total) {
+void poissonAverage(kdNode* node, double* total) {
 	if (node->leaf) {
-		int size = 1<<node->level;
-		*total += node->p / size / size;
+		int size_i = 1<<node->level_i;
+		int size_j = 1<<node->level_j;
+		*total += node->p / size_i / size_j;
 	} else {
-		for (int k = 0; k < 4; k++) {
+		for (int k = 0; k < 2; k++) {
 			poissonAverage(node->children[k], total);
 		}
 	}
 }
 
-void expandRadius(qNode* node, double radius) {
+void expandRadius(kdNode* node, double radius) {
 	if (node->leaf) {
-		int size = 1<<node->level;
-		double x = (node->j + 0.5)/size;
-		double y = (node->i + 0.5)/size;
+		int size_j = 1<<node->level_j;
+		int size_i = 1<<node->level_i;
+		double x = (node->j + 0.5)/size_j;
+		double y = (node->i + 0.5)/size_i;
 		double dist = sqrt((0.5-x)*(0.5-x) + (0.5-y)*(0.5-y));
 		if (dist < radius) {
-			node->expand(false);
+			SplitDir dir;
+			if (node->level_i == node->level_j) {
+				dir = SPLIT_X;
+			} else {
+				dir = SPLIT_Y;
+			}
+			node->expand(false, dir);
 		}
 	} else {
-		for (int k = 0; k < 4; k++) {
+		for (int k = 0; k < 2; k++) {
 			expandRadius(node->children[k], radius);
 		}
 	}
@@ -2422,7 +2411,6 @@ void expandRadius(qNode* node, double radius) {
 double runPoissonTest(bool print) {
 	// set all pressure to 0 again
 	assert(poissonTestFunc != POISSONFUNCNONE);
-
 	poissonReset(root);
 	
 	double initialResidual = computeResidual(root);
@@ -2448,6 +2436,7 @@ double runPoissonTest(bool print) {
 		i++;
 		oldR = newR;
 		newR = runVCycle();
+		//printf("residual after %d vcycles: %f\n", i, newR);
 		double total = 0.0;
 		//double K = 0.0;
 		//poissonAverage(root, &K);
@@ -2462,10 +2451,7 @@ double runPoissonTest(bool print) {
 		avgR = 0.0;
 		poissonAverageR(root, &avgR);
 		//doneVCycle |= fabs(newR-oldR) < eps/100;
-		newR = getMaxR(root);
-		doneVCycle = newR < eps;
-
-		//printf("residual after %d vcycles: %f\n", i, newR);
+		doneVCycle = getMaxR(root) < eps;
 	}
 	double time = 0.0;
 	if (print) {
@@ -2474,48 +2460,59 @@ double runPoissonTest(bool print) {
 		printf("average error: %f\n", avgError);
 	}
 	return time;
-
+	//printPressure();
 }
 
 // computes error in gradient discretization
-void checkPoissonErrorRecursive(qNode* node, double* max, double* avg) {
+void checkPoissonErrorRecursive(kdNode* node, double* maxG, double* avgG, double* maxL, double* avgL) {
 	if (node->leaf) {
-		int size = 1<<node->level;
+		int size_i = 1<<node->level_i;
+		int size_j = 1<<node->level_j;
 		for (int k = 0; k < 4; k++) {
 			double vel;
 			if (k == 0) vel = node->vy2;
 			else if (k == 1) vel = -node->vy;
 			else if (k == 2) vel = node->vx2;
 			else vel = -node->vx;
-			double grad = node->getFaceGradient(levels - 1, k, P);
+			double grad = node->getFaceGradient(totalLevels, k, P);
 			double error = fabs(grad - vel);
 			//printf("d: %d, velocity: %f, pressure gradient :%f, error: %f\n", k, vel, grad, error);
-			*max = fmax(*max, error);
-			*avg += error/size/size/4;
+			*maxG = fmax(*maxG, error);
+			*avgG += error/ size_i/size_j/4;
 		}
+		double aSum = 0.0;
+		double bSum = 0.0;
+		node->getLaplacian(totalLevels, &aSum, &bSum, P);
+		double laplacian = (aSum * node->p + bSum) * size_i * size_j;
+		double lap2 = 0.0;
+		double error = fabs(laplacian - node->divV);
+		*maxL = fmax(*maxL, error);
+		*avgL += error / size_i/size_j;
+		
 	} else {
-		for (int k = 0; k < 4; k++) {
-			checkPoissonErrorRecursive(node->children[k], max, avg);
+		for (int k = 0; k < 2; k++) {
+			checkPoissonErrorRecursive(node->children[k], maxG, avgG, maxL, avgL);
 		}
 	}
 }
 
 void checkPoissonError() {
 	// TODO pass values to sum
-	double max = 0.0;
-	double avg = 0.0;
-	checkPoissonErrorRecursive(root, &max, &avg);	
+	double maxG = 0.0;
+	double avgG = 0.0;
+	double maxL = 0.0;
+	double avgL = 0.0;
+	checkPoissonErrorRecursive(root, &maxG, &avgG, &maxL, &avgL);	
 
-	printf("gradient error. max: %f, avg: %f\n", max, avg);
+	printf("gradient error. max: %f, avg: %f\n", maxG, avgG);
+	printf("laplacian error. max: %f, avg: %f\n", maxL, avgL);
 }
 
-
-
-
-void setErrorPressure(qNode* node) {
-	int size = 1<<node->level;
-	double x = (node->j + 0.5)/size;
-	double y = (node->i + 0.5)/size;
+void setErrorPressure(kdNode* node) {
+	int size_i = 1<<node->level_i;
+	int size_j = 1<<node->level_j;
+	double x = (node->j + 0.5)/size_j;
+	double y = (node->i + 0.5)/size_i;
 
 	if (errorTestFunc == ERRORXY) {
 		double newy = 2*y+1;
@@ -2531,7 +2528,7 @@ void setErrorPressure(qNode* node) {
 	}
 		
 	if (!node->leaf) {
-		for (int k = 0; k < 4; k++) {
+		for (int k = 0; k < 2; k++) {
 			setErrorPressure(node->children[k]);
 		}
 	}
@@ -2559,39 +2556,46 @@ double getRealDerivative(double x, double y, int k) {
 	assert(false);
 }
 
-double calculateError(qNode* node, double* avgError) {
+double calculateError(kdNode* node, double* avgError) {
 	if (node->leaf) {
-		int size = 1<<node->level;
+		int size_i = 1<<node->level_i;
+		int size_j = 1<<node->level_j;
 		double max = 0.0;
 		for (int k = 0; k < 4; k++) {
 			// calculate gradient in direction k
-			int ml = levels - 1;
+
+			// 4/4: (4, 7) in dir 3
+			if (node->level_i == 4 && node->level_j == 4 && node->i ==4 && node->j == 7 && k == 3) {
+				printf("asdfasdfsafa\n");
+			}
+			int ml = totalLevels;
 			double calc = node->getFaceGradient(ml, k, P);
+			ml = node->level_i + node->level_j;
 			
-			double x = (node->j + 0.5 + 0.5*deltas[k][1])/size;
-			double y = (node->i + 0.5 + 0.5*deltas[k][0])/size;
+			double x = (node->j + 0.5 + 0.5*deltas[k][1])/size_j;
+			double y = (node->i + 0.5 + 0.5*deltas[k][0])/size_i;
 			double real = getRealDerivative(x, y, k);
 			if (k % 2 == 1) {
 				// switch directions because other way
 				real = -real;
 			}
 			double error = fabs(real - calc);
-			printf("Error for node %d: (%d, %d) in dir %d, ", node->level, node->i, node->j, k);
-			if (ml == node->level) {
+			printf("Error for node %d/%d: (%d, %d) in dir %d, ", node->level_i, node->level_j, node->i, node->j, k);
+			if (ml == node->level_i + node->level_j) {
 				printf(" at the same level.");
-			} else if (ml < node->level) {
-				printf(" up %d levels.", node->level - ml);
+			} else if (ml < node->level_i + node->level_j) {
+				printf(" up %d levels.", node->level_i + node->level_j - ml);
 			} else {
-				printf(" down %d levels.", ml - node->level);
+				printf(" down %d levels.", ml - node->level_i - node->level_j);
 			}
 			printf("real: %f, calc: %f, error: %f\n", real, calc, error);
-			*avgError += error/size/size;
+			*avgError += error/size_i/size_j/4;
 			max = fmax(max, error);
 		}
 		return max;
 	} else {
 		double maxError = 0.0;
-		for (int k = 0; k < 4; k++) {
+		for (int k = 0; k < 2; k++) {
 			maxError = fmax(maxError, calculateError(node->children[k], avgError));
 		}
 		return maxError;
@@ -2614,26 +2618,57 @@ void runErrorTest() {
 	printf("maximum error: %f, average error: %f\n", maxError, avgError);
 }
 
-void adaptTestRecursive(qNode* node) {
+void adaptTestRecursive(kdNode* node) {
 	node->p = 0.0;
-	if (node->level == levels - 1) {
+	if (node->level_i + node->level_j == totalLevels) {
 		return;
 	}
 	if (node->leaf) {
-		int size = 1<<node->level;
+		int size_i = 1<<node->level_i;
+		int size_j = 1<<node->level_j;
 		double x1, y1, x2, y2;
-		x1 = ((float)node->j)/size;
-		y1 = ((float)node->i)/size;
-		x2 = x1 + 1.0/size;
-		y2 = y1 + 1.0/size;
+		x1 = ((float)node->j)/size_j;
+		y1 = ((float)node->i)/size_i;
+		x2 = x1 + 1.0/size_j;
+		y2 = y1 + 1.0/size_i;
 		if (rectIntersectFunc(x1, y1, x2, y2)) {
-			node->expand(false);
-			for (int k = 0; k < 4; k++) {
+			// determine direction of adaptation	
+
+			SplitDir dir;
+			if (node->level_i == levels || node->level_i - MAX_LEVEL_DIF == node->level_j) {
+				dir =  SPLIT_X;
+			} else if (node->level_j == levels || node->level_j - MAX_LEVEL_DIF == node->level_i) {
+				dir = SPLIT_Y;
+			} else {
+				// x
+				double midx = (x1+x2)/2.0;
+				bool bothX = rectIntersectFunc(x1, y1, midx, y2) && rectIntersectFunc(midx, y1, x2, y2);
+				double midy = (y1+y2)/2.0;
+				bool bothY = rectIntersectFunc(x1, y1, x2, midy) && rectIntersectFunc(x1, midy, x2, y2); 
+
+				if ((bothX && bothY) || (!bothX && !bothY)) {
+					// both will end up being split next time, choice doesn't matter
+					if (node->level_i > node->level_j) {
+						dir = SPLIT_Y;
+					} else {
+						dir = SPLIT_X;
+					}
+				} else if (bothX) {
+					dir = SPLIT_Y;
+				} else if (bothY) {
+					dir = SPLIT_X;
+				} else {
+					assert (false);
+				}
+				
+			}
+			node->expand(false, dir);
+			for (int k = 0; k < 2; k++) {
 				adaptTestRecursive(node->children[k]);
 			}
 		}
 	} else {
-		for (int k = 0; k < 4; k++) {
+		for (int k = 0; k < 2; k++) {
 			adaptTestRecursive(node->children[k]);
 		}
 	}
@@ -2643,7 +2678,7 @@ void runAdaptTest() {
 	bool done = false;
 	int numCycles = -1;
 
-	//root = new qNode(NULL, 0, 0);
+	//root = new kdNode(NULL, 0, 0);
 
 	adaptTestRecursive(root);
 
@@ -2652,6 +2687,8 @@ void runAdaptTest() {
 	printProfiling();	
 
 }
+
+
 
 void runProjectTest() {
 	if (adaptScheme != ADAPTNONE) {
@@ -2729,31 +2766,27 @@ void computeResultStats(int n, double results[]) {
 void initSim() {
 	printf("init sim\n");
 
-	root = new qNode(NULL, 0, 0);
-	oldRoot = new qNode(NULL, 0, 0);
+	root = new kdNode(NULL, 0, 0, 0, 0);
+	oldRoot = new kdNode(NULL, 0, 0, 0, 0);
 
-	int startLevel = levels - 2;
+	int startLevel = totalLevels - 2;
 	if (startState == POISSONTEST || startState == ERRORTEST || startState == PROJECTTEST) {
 		if (adaptScheme == ADAPTNONE)
-			startLevel = levels - 1;
+			startLevel = totalLevels;
 		else
-			startLevel = 3;
+			startLevel = 6;
 	} else if (startState == ADAPTTEST) {
-		//assert(levels > 3);
-		//startLevel = std::max(levels - 4, levels/2 + 1);
-		//startLevel = levels - 3;
-		startLevel = 1;
+		startLevel = 2;
 	}
-
 
 	initRecursive(root, startLevel);
 
+	//computeNodalValues(root);
+	
 	if (startState == POISSONTEST) {
-
 		poissonReset(root);
 		// adapt
 		if (adaptScheme != ADAPTNONE) {
-			//
 			bool done = false;
 
 			printf("doing poisson adapt first\n");
@@ -2774,7 +2807,6 @@ void initSim() {
 			root->profile();
 			printProfiling();
 		}
-		// TODO remove
 
 		root->computeVelocityDivergence();
 
@@ -2784,13 +2816,13 @@ void initSim() {
 		}
 
 		if (numToRun == 0) numToRun++;
-		double results[numToRun];
+		double times[numToRun];
 		for (int i = 0; i < numToRun; i++) {
-		 results[i] = runPoissonTest(true);
+			times[i] = runPoissonTest(true);
 		}
-		computeResultStats(numToRun, results);
-		numToRun = 0;
 		checkPoissonError();
+		computeResultStats(numToRun, times);
+		numToRun = 0;
 		return;
 	} else if (startState == ADAPTTEST) {
 		runAdaptTest();
@@ -2803,8 +2835,6 @@ void initSim() {
 		return;
 	}
 
-	computeNodalVelocity(root);
-
 	if (particleAlgorithm != PARTICLENONE) {
 
 		particles = new Particle[numParticles];
@@ -2812,12 +2842,12 @@ void initSim() {
 		double distmin = 0.0;
 		double distmax = 1.0;
 
-		if (startState == LEFT) {
+		/*if (startState == LEFT) {
     		int size = 1<<levelToDisplay;
 			double h = 1.0 / size;
 			distmin = 0.5 - 2 * h;
 			distmax = 0.5 + 2 * h;
-		}
+		}*/
 
 		std::uniform_real_distribution<double> distribution(distmin, distmax);
 
@@ -2842,7 +2872,7 @@ void keyboard(unsigned char key, int x, int y) {
 			}
 			break;
 		case 'w':
-			levelToDisplay = std::min(levels - 1, levelToDisplay + 1);
+			levelToDisplay = std::min(totalLevels, levelToDisplay + 1);
 			if (!headless) {
 				glutPostRedisplay();
 			}
@@ -2860,15 +2890,13 @@ void keyboard(unsigned char key, int x, int y) {
 	}
 }
 
-void parseAdapt(char** argv, int i) {
-	
-}
  
 /* Main function: GLUT runs as a console application starting at main()  */
 int main(int argc, char** argv) {
 	glutInit(&argc, argv);          // Initialize GLUT
 	headless = false;
 	levels = 6;
+	totalLevels = 12;
 	water = false;
 	drawCells = false;
 	screenshot = false;
@@ -2883,7 +2911,8 @@ int main(int argc, char** argv) {
 		if (!strcmp("--headless", arg)) {
 			headless = true;
 		} else if (!strcmp("-levels", arg)) {
-			levels= atoi(argv[++i]);
+			levels = atoi(argv[++i]);
+			totalLevels = 2 * levels;
 		} else if (!strcmp("-adapt", arg)) {
 			char* scheme = argv[++i];
 			if (!strcmp("curl", scheme)) {
@@ -2894,6 +2923,7 @@ int main(int argc, char** argv) {
 				adaptScheme = VNORM;
 			} else {
 				printf("invalid adapt scheme %s\n", scheme);
+				return 1;
 			}
 		} else if (!strcmp("--water", arg)) {
 			water = true;
@@ -2945,7 +2975,6 @@ int main(int argc, char** argv) {
 			} else {
 				return 1;
 			}
-			adaptScheme = CURL;
 		} else if (!strcmp("errortest", arg)) {
 			startState = ERRORTEST;
 			char* func = argv[++i];
@@ -2970,6 +2999,9 @@ int main(int argc, char** argv) {
 			}
 		} else if (!strcmp("-pre", arg)) {
 			warmupRuns = atoi(argv[++i]);
+		} else if (!strcmp("-maxleveldif", arg)) {
+			MAX_LEVEL_DIF = atoi(argv[++i]);
+			assert (MAX_LEVEL_DIF > 0);
 		} else if (!strcmp("-adaptscale", arg)) {
 			adaptScale = atof(argv[++i]);
 		} else if (!strcmp("-wavePeriod",arg)) {
@@ -2978,24 +3010,25 @@ int main(int argc, char** argv) {
 			offsetY = atof(argv[++i]);
 		} else if (!strcmp("-thresh", arg)) {
 			thresh = atof(argv[++i]);
+		} else if (!strcmp("-eps", arg)) {
+			eps = atof(argv[++i]);
 		} else if (!strcmp("-k", arg)) {
 			poissonk = atoi(argv[++i]);
-		} else if (!strcmp("-l", arg)) {	
+		} else if (!strcmp("-l", arg)) {
 			poissonl = atoi(argv[++i]);
 		} else if (!strcmp("--pressureinterp", arg)) {
 			pressureInterp = true;
 		}
 	}
 	//levelToDisplay = levels/2;
-    levelToDisplay = levels - 1;
+    levelToDisplay = totalLevels;
 	printf("headless: %d, levels: %d\n", headless, levels);
 
 	// run tests
 	//testNeighbors();
 	//testMultilevelNeighbors();
-	//testIntersect();
-	//testPressureInterp();
-	testNodalVelocity();
+	//testGradLap();
+	testPressureInterp();
 
 	initSim();
 	
@@ -3007,7 +3040,7 @@ int main(int argc, char** argv) {
 	// TODO don't do if headless
 	glutInitWindowSize(windowWidth, windowHeight);   // Set the window's initial width & height
 	glutInitWindowPosition(50, 50);
-	windowid = glutCreateWindow("Quad Tree");  // Create window with the given title
+	windowid = glutCreateWindow("K-D Tree");  // Create window with the given title
 	glutDisplayFunc(display);       // Register callback handler for window re-paint event
 	glutKeyboardFunc(keyboard);
 	initGL();                       // Our own OpenGL initialization
